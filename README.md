@@ -12,6 +12,8 @@ Tools to control your DXO One camera.
     - Resizes and converts DNGs to JPGs without modifying the image's colorspace
 
 ## Credits
+This repo is a direct fork of https://github.com/jsyang/dxo1control & will use AI coding agents to introduce new features.
+
 This work is made possible thanks to these previous findings
   - https://github.com/rickdeck/DxO-One allowing microUSB port to be used
   - https://github.com/yeongrokgim/dxo-one-firmware-study figuring out debug output
