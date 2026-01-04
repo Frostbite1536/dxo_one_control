@@ -314,7 +314,173 @@ Features are prioritized based on:
 
 ---
 
+## Research Discoveries from Community Repositories
+
+**Sources**: [rickdeck/DxO-One](https://github.com/rickdeck/DxO-One) & [yeongrokgim/dxo-one-firmware-study](https://github.com/yeongrokgim/dxo-one-firmware-study)
+
+This section documents discoveries from community DXO One reverse-engineering efforts that could enhance dxo_one_control.
+
+### Hardware & Architecture Insights
+
+**Dual-OS Architecture** (Not Currently Leveraged)
+- **RTOS (ThreadX)**: Handles main camera functionality, display, and image processing
+- **Linux OS**: Manages Wi-Fi connectivity, runs Dropbear SSH server
+- **SoC**: Ambarella A9S35 (same as GoPro Hero ≤5)
+- **Storage Paths**: C:\ for SD card, A:\ and B:\ for internal calibration data
+
+*Potential Use*: Understanding the dual-OS architecture could enable simultaneous USB + Wi-Fi control, or SSH-based debugging during development.
+
+### Autoexec Script System 🎯 HIGH PRIORITY
+
+**Discovery**: Camera executes `autoexec.ash` files from SD card on boot
+- **Format**: AmbaShell scripts (DOS-like syntax)
+- **Capabilities**: Configure camera settings, enable logging, switch USB modes
+- **Requirements**: Unix line endings (LF), trailing line break mandatory
+
+*Potential Use*:
+- Automated camera initialization for multi-camera rigs
+- Pre-configure cameras before USB control takeover
+- Enable diagnostic logging for troubleshooting
+- Switch to USB networking mode automatically
+
+**Example Applications**:
+```ash
+# C:\autoexec.ash - Example configuration script
+t app msg_q 1                    # Enable message queue logging
+t dxo set_param focus_mode 2     # Set hyperfocal distance mode
+t usb net                        # Enable USB networking mode
+```
+
+### SSH Access for Advanced Control
+
+**Discovery**: Dropbear SSH server runs when Wi-Fi is active
+- **Authentication**: Uses cryptographically-signed `authorized_keys`
+- **Access Level**: Root shell access to Linux OS
+- **Limitation**: Requires firmware modification to bypass key validation
+
+*Potential Use*:
+- Advanced debugging during development
+- Direct filesystem access for extracting camera metadata
+- Real-time monitoring of camera internals
+- Alternative control channel alongside USB
+
+**Implementation Risk**: Medium - requires firmware modification
+
+### Wi-Fi Multi-Camera Control (Alternative to USB)
+
+**Discovery**: JSON-RPC protocol available over Wi-Fi
+- **Protocol**: Same JSON-RPC as USB, but over network
+- **Status**: Currently non-functional for cross-platform (Android ↔ iOS variants)
+- **Potential**: Multi-camera control without USB hub requirements
+
+*Potential Use*:
+- Wireless camera arrays for 360° photography
+- Remote camera control at distance
+- Hybrid USB + Wi-Fi control (more than 4 cameras)
+- Mobile device control without Lightning connector
+
+**Current Implementation**: dxo1usb.js already uses JSON-RPC over USB; could be adapted for network transport.
+
+### Firmware Analysis Tools
+
+**Discovery**: Community has developed firmware extraction/analysis pipeline
+- **Tools**: gopro-fw-tools, ubi_reader, binwalk, strings
+- **Capabilities**: Extract Linux partition, discover undocumented commands
+- **Findings**: "Many potential commands and device-specific commands in RTOS"
+
+*Potential Use*:
+- Discover additional camera commands beyond current API
+- Document complete camera command protocol
+- Find advanced features (exposure bracketing, HDR, etc.)
+- Enable features disabled in stock firmware
+
+**Risk Level**: Low (read-only analysis), High (if firmware modification attempted)
+
+### Advanced Shooting Modes
+
+**Discovery**: Firmware contains undocumented advanced shooting capabilities
+- **Exposure Bracketing**: Multiple shots with different exposures
+- **Burst Capture**: High-speed sequential shooting
+- **Hyperfocal Distance Mode**: Calculated optimal focus based on parameters
+- **Custom Parameter Control**: Numeric parameters for fine-tuning
+
+*Potential Use*:
+- HDR photography (exposure bracketing + merge)
+- Action photography (burst mode)
+- Landscape photography (hyperfocal distance calculations)
+- Professional tethered shooting workflows
+
+**Status**: Commands likely exist in firmware but need to be discovered/documented.
+
+### USB Networking Mode
+
+**Discovery**: Camera supports USB networking mode for data + charging
+- **Activation**: Via autoexec.ash script (`t usb net`)
+- **Benefits**: Simultaneous operation and charging
+- **Protocol**: Unknown if exposes camera control over network interface
+
+*Potential Use*:
+- Eliminate battery concerns during long shoots
+- Potential alternative control protocol
+- Network-based multi-camera control over USB hub
+
+**Investigation Needed**: Test if camera API is accessible over USB network interface.
+
+### Cross-Platform Hardware Compatibility
+
+**Discovery**: Lightning-variant cameras work via microUSB port on Android
+- **Hardware**: All variants have microUSB port (not just USB-C models)
+- **Limitation**: Wi-Fi communication doesn't work cross-platform
+- **Implication**: USB control is platform-agnostic
+
+*Current Status*: dxo_one_control already leverages this via WebUSB.
+
+### Firmware Logging & Debugging
+
+**Discovery**: Comprehensive logging can be redirected to SD card
+- **Method**: Autoexec scripts configure message queue logging
+- **Output**: Real-time camera internals written to C:\logs\
+- **Use Case**: Debugging communication issues, understanding camera state
+
+*Potential Use*:
+- Troubleshooting guide for users with connection issues
+- Developing new features with visibility into camera internals
+- Validating command behavior and responses
+- Bug reports with comprehensive diagnostic data
+
+### Implementation Recommendations
+
+**Quick Wins** (Low effort, high value):
+1. ✅ **Multi-camera USB control** - Already implemented!
+2. 📝 **Document autoexec.ash capabilities** - User guide section for SD card scripts
+3. 🔍 **Firmware analysis** - Extract and document additional commands
+
+**Medium-term Opportunities**:
+4. 📡 **Wi-Fi JSON-RPC transport** - Network-based alternative to USB
+5. 🎯 **Advanced shooting modes** - Discover and implement bracketing/burst commands
+6. 🔌 **USB networking mode** - Test and document capabilities
+
+**Research Projects** (Long-term):
+7. 🔬 **SSH access workflow** - Developer tool for advanced debugging
+8. 🧮 **Hyperfocal distance calculator** - UI helper for landscape photography
+9. 📊 **Firmware logging integration** - Automatic diagnostic data collection
+
+### Exclusions & Risks
+
+**Will NOT Pursue**:
+- ❌ **Firmware modification** - Too risky, could brick devices
+- ❌ **Lightning connector reverse-engineering** - USB works universally
+- ❌ **SSH key validation bypass** - Security/legal concerns
+
+**Risks to Consider**:
+- Autoexec scripts could interfere with USB control if misconfigured
+- Undocumented commands may behave unexpectedly or cause crashes
+- Firmware analysis is read-only; writing custom firmware is out of scope
+
+---
+
 **Last Updated**: 2026-01-04
-**Document Version**: 1.1
+**Document Version**: 1.2
 **Current Phase**: Phase 1 (Foundation & Documentation)
 **Early Deliveries**: Multi-camera support (from Phase 4)
+**New Research**: Community discoveries integrated
