@@ -402,6 +402,175 @@ function sendBytes(data: Buffer) {  // Node.js Buffer not browser-compatible
 
 ---
 
+## Multi-Camera Invariants
+
+These invariants apply when using the multi-camera API (CameraManager).
+
+### INV-MULTI-001: Camera Identification
+
+**Rule**: Each connected camera MUST be uniquely identifiable by a stable ID (serial number or generated ID).
+
+**Rationale**: Users need to know which physical camera is which in a multi-camera setup. Without unique identification, users cannot reliably configure or troubleshoot individual cameras.
+
+**Examples**:
+
+Valid:
+```javascript
+// Use serial number when available
+const cameraId = device.serialNumber || generateUniqueId(device);
+
+// Display identifiable name to user
+camera.displayName = camera.nickname || `Camera (${camera.serialNumber.slice(-4)})`;
+```
+
+Invalid:
+```javascript
+// Use array index as ID (changes on reconnect)
+cameras[0].capture();  // Which physical camera is this?
+
+// No way to identify cameras
+const cameras = manager.getAllCameras();  // All look the same
+```
+
+**Enforcement**:
+- CameraDevice class requires unique ID on construction
+- Display name always shows identifying information
+- Nickname support for user-assigned names
+- Serial number displayed in camera details UI
+
+### INV-MULTI-002: Maximum Camera Limit
+
+**Rule**: The system MUST support a maximum of 4 cameras. Connection attempts beyond this limit MUST be rejected with a clear error message.
+
+**Rationale**: Prevents resource exhaustion (USB bandwidth, memory, CPU). 4 cameras is sufficient for most multi-camera use cases (360°, stereo, product photography) while remaining manageable.
+
+**Examples**:
+
+Valid:
+```javascript
+const MAX_CAMERAS = 4;
+
+async connectCamera() {
+  if (this.cameras.size >= MAX_CAMERAS) {
+    throw new Error('Maximum 4 cameras supported. Disconnect a camera to add another.');
+  }
+  // Proceed with connection
+}
+```
+
+Invalid:
+```javascript
+// No limit check
+async connectCamera() {
+  const device = await requestDevice();
+  this.cameras.push(device);  // Could add unlimited cameras
+}
+```
+
+**Enforcement**:
+- MAX_CAMERAS constant in CameraManager
+- Check enforced in connectCamera() method
+- UI disables "Connect" button at limit
+- Clear error message when limit reached
+
+### INV-MULTI-003: Partial Failure Handling
+
+**Rule**: If a multi-camera operation fails on some cameras but succeeds on others, the system MUST clearly report which cameras succeeded and which failed.
+
+**Rationale**: Users need to know exactly what happened during multi-camera capture. Silent partial failures could result in missing critical shots without the user's knowledge.
+
+**Examples**:
+
+Valid:
+```javascript
+async captureAll() {
+  // Use Promise.allSettled to capture all results
+  const results = await Promise.allSettled(
+    cameras.map(camera => camera.takePhoto())
+  );
+
+  const succeeded = results.filter(r => r.status === 'fulfilled');
+  const failed = results.filter(r => r.status === 'rejected');
+
+  return {
+    totalCameras: cameras.length,
+    succeeded: succeeded.length,
+    failed: failed.length,
+    details: results.map(r => ({
+      cameraId: r.cameraId,
+      status: r.status,
+      error: r.reason?.message
+    }))
+  };
+}
+```
+
+Invalid:
+```javascript
+async captureAll() {
+  // Promise.all fails fast - don't know which succeeded
+  try {
+    await Promise.all(cameras.map(c => c.capture()));
+    return { success: true };
+  } catch (e) {
+    return { success: false };  // No details about which failed
+  }
+}
+```
+
+**Enforcement**:
+- Use Promise.allSettled() for batch operations
+- Return per-camera status in results
+- UI shows success/failure for each camera
+- Log includes per-camera timing data
+
+### INV-MULTI-004: Synchronization Accuracy Documentation
+
+**Rule**: The system MUST document and log the actual synchronization accuracy. Users MUST be informed that software sync achieves ~50ms variance (not hardware-level < 1ms).
+
+**Rationale**: Users making assumptions about "simultaneous" capture need realistic expectations. Scientific or professional use cases may require hardware sync which this software cannot provide.
+
+**Examples**:
+
+Valid:
+```javascript
+// Document sync mode and expected variance
+<select id="syncMode">
+  <option value="parallel">Parallel (Best Effort ~50ms)</option>
+  <option value="sequential">Sequential (Reliable)</option>
+</select>
+
+// Log actual timing
+async captureAll() {
+  const startTime = performance.now();
+  const results = await this._captureParallel();
+  const totalTime = performance.now() - startTime;
+
+  console.log(`Capture completed in ${totalTime}ms (mode: ${this.syncMode})`);
+  return results;
+}
+```
+
+Invalid:
+```javascript
+// Claim "simultaneous" without qualification
+button.textContent = "Simultaneous Capture";  // Misleading
+
+// No timing information
+async captureAll() {
+  await Promise.all(cameras.map(c => c.capture()));
+  return { success: true };  // No timing data
+}
+```
+
+**Enforcement**:
+- UI labels sync mode with expected variance
+- Capture results include timing data
+- Documentation explains sync limitations
+- Console logs timing for debugging
+
+---
+
 ## Notes
 
 - These invariants should be reviewed and updated as the project evolves
@@ -412,5 +581,5 @@ function sendBytes(data: Buffer) {  // Node.js Buffer not browser-compatible
 ---
 
 **Last Updated**: 2026-01-04
-**Document Version**: 1.0
-**Total Invariants**: 11
+**Document Version**: 1.1
+**Total Invariants**: 15 (11 core + 4 multi-camera)

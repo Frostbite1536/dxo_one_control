@@ -2,8 +2,22 @@
     dxo1usb.js - Programmatic control of your DXO One camera over USB
     https://github.com/jsyang/dxo1control
     <jsyang@gmail.com>
+
+    This module provides two APIs:
+    1. Single-camera API (original): DXOONE.open() - for single camera control
+    2. Multi-camera API (new): CameraManager - for controlling up to 4 cameras
+
+    Multi-camera support enables:
+    - 360° photography (camera array)
+    - Stereoscopic/3D photography
+    - Multi-angle product photography
+    - Scientific/research capture
 */
 import { getU8AFromHexString, compareU8A, mergeU8A, getStringFromU8A, } from './u8a.js';
+
+// Multi-camera support classes (INV-API-001: backward compatible addition)
+export { CameraDevice } from './CameraDevice.js';
+export { CameraManager } from './CameraManager.js';
 
 const PARAMS_DEVICE_REQUEST = { filters: [{ vendorId: 0x2b8f }] };
 

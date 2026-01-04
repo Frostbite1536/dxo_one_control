@@ -1,0 +1,694 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DXO One Multi-Camera Control</title>
+</head>
+<script type="module">
+    import { CameraManager } from './CameraManager.js';
+
+    const $ = q => document.querySelector(q);
+    const $$ = q => document.querySelectorAll(q);
+
+    // Initialize the camera manager
+    const manager = new CameraManager({
+        onCameraChange: updateCameraList,
+        onCaptureComplete: showCaptureResults,
+    });
+
+    // State
+    let selectedCameraId = null;
+    let liveViewCameraId = null;
+
+    /**
+     * Updates the camera list display
+     */
+    function updateCameraList(cameras) {
+        const list = $('#camera-list');
+        const count = cameras.length;
+
+        // Update header
+        $('#camera-count').textContent = manager.getSummary();
+
+        // Update connect button state (INV-MULTI-002: max 4 cameras)
+        $('#btnConnectNew').disabled = count >= 4;
+
+        // Update capture button state
+        $('#btnCaptureAll').disabled = count === 0;
+        $('#btnDisconnectAll').disabled = count === 0;
+
+        if (count === 0) {
+            list.innerHTML = '<div class="no-cameras">No cameras connected. Click "+ Connect Camera" to add one.</div>';
+            $('#camera-details').innerHTML = '';
+            return;
+        }
+
+        // Render camera list (Bug fix: escape camera ID to prevent XSS)
+        list.innerHTML = cameras.map(camera => `
+            <div class="camera-item ${camera.id === selectedCameraId ? 'selected' : ''}"
+                 data-camera-id="${escapeHtml(camera.id)}"
+                 onclick="window.selectCamera('${escapeJsString(camera.id)}')">
+                <div class="camera-header">
+                    <span class="camera-name">${escapeHtml(camera.displayName)}</span>
+                    <span class="camera-status ${camera.isConnected ? 'connected' : 'disconnected'}">
+                        ${camera.isConnected ? '● Connected' : '○ Disconnected'}
+                    </span>
+                </div>
+                <div class="camera-info">
+                    ${camera.batteryLevel !== null ? `<span class="battery">🔋 ${camera.batteryLevel}%</span>` : ''}
+                    ${camera.isLiveViewActive ? '<span class="live-indicator">📺 Live</span>' : ''}
+                    ${camera.lastError ? `<span class="error-indicator" title="${escapeHtml(camera.lastError)}">⚠️</span>` : ''}
+                </div>
+            </div>
+        `).join('');
+
+        // Select first camera if none selected
+        if (!selectedCameraId && cameras.length > 0) {
+            selectCamera(cameras[0].id);
+        }
+    }
+
+    /**
+     * Shows capture results after multi-camera capture
+     */
+    function showCaptureResults(results, totalTime) {
+        const succeeded = results.filter(r => r.status === 'success').length;
+        const failed = results.filter(r => r.status === 'error').length;
+
+        let html = `<div class="capture-results">
+            <h4>Capture Complete (${totalTime.toFixed(0)}ms)</h4>
+            <div class="capture-summary">
+                <span class="success-count">${succeeded} succeeded</span>
+                ${failed > 0 ? `<span class="fail-count">${failed} failed</span>` : ''}
+            </div>
+            <ul class="capture-details">
+        `;
+
+        for (const result of results) {
+            const icon = result.status === 'success' ? '✅' : '❌';
+            html += `<li class="${result.status}">
+                ${icon} ${escapeHtml(result.cameraName)}
+                ${result.error ? `: ${escapeHtml(result.error)}` : ''}
+            </li>`;
+        }
+
+        html += '</ul></div>';
+        log(html);
+    }
+
+    /**
+     * Selects a camera and shows its details
+     */
+    window.selectCamera = (cameraId) => {
+        selectedCameraId = cameraId;
+        const camera = manager.getCamera(cameraId);
+
+        // Update selection visual
+        $$('.camera-item').forEach(el => {
+            el.classList.toggle('selected', el.dataset.cameraId === cameraId);
+        });
+
+        if (!camera) {
+            $('#camera-details').innerHTML = '';
+            return;
+        }
+
+        // Bug fix: escape cameraId to prevent XSS in onclick handlers
+        const escapedId = escapeJsString(cameraId);
+        const state = camera.getState();
+        $('#camera-details').innerHTML = `
+            <div class="camera-detail-panel">
+                <h3>${escapeHtml(state.displayName)}</h3>
+                <div class="camera-actions">
+                    <button onclick="window.takePhotoSingle('${escapedId}')">📸 Take Photo</button>
+                    <button onclick="window.toggleLiveView('${escapedId}')" id="btnLiveView-${escapeHtml(cameraId)}">
+                        ${state.isLiveViewActive ? 'Stop Live View' : 'Start Live View'}
+                    </button>
+                    <button onclick="window.showRenameDialog('${escapedId}')">✏️ Rename</button>
+                    <button onclick="window.disconnectCamera('${escapedId}')" class="danger">Disconnect</button>
+                </div>
+                <div class="camera-meta">
+                    <p><strong>ID:</strong> ${escapeHtml(state.id)}</p>
+                    ${state.serialNumber ? `<p><strong>Serial:</strong> ${escapeHtml(state.serialNumber)}</p>` : ''}
+                    ${state.batteryLevel !== null ? `<p><strong>Battery:</strong> ${state.batteryLevel}%</p>` : ''}
+                </div>
+            </div>
+        `;
+    };
+
+    /**
+     * Connects a new camera
+     */
+    window.connectCamera = async () => {
+        try {
+            log('Connecting camera...');
+            const camera = await manager.connectCamera();
+            log(`Connected: ${camera.displayName}`);
+            selectCamera(camera.id);
+        } catch (error) {
+            log(`<div class="error">Connection failed: ${escapeHtml(error.message)}</div>`);
+        }
+    };
+
+    /**
+     * Disconnects a specific camera
+     */
+    window.disconnectCamera = async (cameraId) => {
+        try {
+            await manager.disconnectCamera(cameraId);
+            selectedCameraId = null;
+            log('Camera disconnected');
+        } catch (error) {
+            log(`<div class="error">Disconnect failed: ${escapeHtml(error.message)}</div>`);
+        }
+    };
+
+    /**
+     * Disconnects all cameras
+     */
+    window.disconnectAll = async () => {
+        if (!confirm('Disconnect all cameras?')) return;
+        try {
+            await manager.disconnectAll();
+            selectedCameraId = null;
+            log('All cameras disconnected');
+        } catch (error) {
+            log(`<div class="error">Failed: ${escapeHtml(error.message)}</div>`);
+        }
+    };
+
+    /**
+     * Captures on all cameras
+     */
+    window.captureAll = async () => {
+        log('Capturing on all cameras...');
+        try {
+            await manager.captureAll();
+            // Results shown via onCaptureComplete callback
+        } catch (error) {
+            log(`<div class="error">Capture failed: ${escapeHtml(error.message)}</div>`);
+        }
+    };
+
+    /**
+     * Takes a photo on a single camera
+     */
+    window.takePhotoSingle = async (cameraId) => {
+        const camera = manager.getCamera(cameraId);
+        if (!camera) return;
+
+        try {
+            log(`Taking photo on ${camera.displayName}...`);
+            await camera.takePhoto();
+            log(`Photo taken on ${camera.displayName}!`);
+        } catch (error) {
+            log(`<div class="error">Photo failed: ${escapeHtml(error.message)}</div>`);
+        }
+    };
+
+    /**
+     * Toggles live view for a camera
+     */
+    window.toggleLiveView = async (cameraId) => {
+        const camera = manager.getCamera(cameraId);
+        if (!camera) return;
+
+        if (camera.isLiveViewActive) {
+            camera.stopLiveView();
+            $('#liveview').src = '';
+            liveViewCameraId = null;
+        } else {
+            // Stop any existing live view
+            if (liveViewCameraId) {
+                const prev = manager.getCamera(liveViewCameraId);
+                if (prev) prev.stopLiveView();
+            }
+
+            liveViewCameraId = cameraId;
+            // Store the last revoke callback to prevent memory leaks
+            let lastRevokeCallback = null;
+            camera.startLiveView((url, revokeCallback) => {
+                // Revoke previous URL to free memory
+                if (lastRevokeCallback) lastRevokeCallback();
+                lastRevokeCallback = revokeCallback;
+                if (url) $('#liveview').src = url;
+            });
+        }
+
+        // Refresh UI
+        updateCameraList(manager.getAllCameraStates());
+        if (selectedCameraId === cameraId) {
+            selectCamera(cameraId);
+        }
+    };
+
+    /**
+     * Shows rename dialog for a camera
+     */
+    window.showRenameDialog = (cameraId) => {
+        const camera = manager.getCamera(cameraId);
+        if (!camera) return;
+
+        const newName = prompt('Enter nickname for camera:', camera.nickname || '');
+        if (newName !== null) {
+            manager.setNickname(cameraId, newName || null);
+        }
+    };
+
+    /**
+     * Changes the sync mode
+     */
+    window.setSyncMode = (mode) => {
+        manager.setSyncMode(mode);
+        log(`Sync mode: ${mode}`);
+    };
+
+    /**
+     * Logs a message to the output area
+     */
+    function log(msg) {
+        $('#msg').innerHTML = msg;
+    }
+
+    /**
+     * Escapes HTML to prevent XSS
+     */
+    function escapeHtml(str) {
+        if (!str) return '';
+        const div = document.createElement('div');
+        div.textContent = str;
+        return div.innerHTML;
+    }
+
+    /**
+     * Escapes a string for safe use in JavaScript string literals (single-quoted)
+     * Prevents XSS when embedding values in onclick handlers
+     */
+    function escapeJsString(str) {
+        if (!str) return '';
+        return str
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/"/g, '\\"')
+            .replace(/</g, '\\x3C')
+            .replace(/>/g, '\\x3E')
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '\\r');
+    }
+
+    // Check WebUSB availability on load
+    window.addEventListener('DOMContentLoaded', () => {
+        if (!manager.isWebUSBAvailable()) {
+            $('#main-content').innerHTML = `
+                <div class="error-banner">
+                    WebUSB is not supported in this browser.
+                    Please use Chrome, Edge, or Opera.
+                </div>
+            `;
+            return;
+        }
+
+        // Initialize UI
+        updateCameraList([]);
+    });
+</script>
+<style>
+    * {
+        box-sizing: border-box;
+    }
+
+    body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+        margin: 0;
+        padding: 20px;
+        background: #f5f5f5;
+        color: #333;
+    }
+
+    h2 {
+        margin-top: 0;
+        color: #1a1a1a;
+    }
+
+    .warning-banner {
+        background: #fff3cd;
+        border: 1px solid #ffc107;
+        color: #856404;
+        padding: 10px 15px;
+        border-radius: 4px;
+        margin-bottom: 20px;
+    }
+
+    .error-banner {
+        background: #f8d7da;
+        border: 1px solid #f5c6cb;
+        color: #721c24;
+        padding: 15px;
+        border-radius: 4px;
+        text-align: center;
+    }
+
+    .container {
+        display: grid;
+        grid-template-columns: 300px 1fr;
+        gap: 20px;
+        max-width: 1200px;
+        margin: 0 auto;
+    }
+
+    /* Camera Panel */
+    .camera-panel {
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        padding: 15px;
+    }
+
+    .camera-panel-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        margin-bottom: 15px;
+        padding-bottom: 10px;
+        border-bottom: 1px solid #eee;
+    }
+
+    #camera-count {
+        font-size: 0.9em;
+        color: #666;
+    }
+
+    #camera-list {
+        margin-bottom: 15px;
+        max-height: 300px;
+        overflow-y: auto;
+    }
+
+    .camera-item {
+        padding: 10px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        margin-bottom: 8px;
+        cursor: pointer;
+        transition: all 0.2s;
+    }
+
+    .camera-item:hover {
+        border-color: #007bff;
+        background: #f8f9fa;
+    }
+
+    .camera-item.selected {
+        border-color: #007bff;
+        background: #e7f1ff;
+    }
+
+    .camera-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+    }
+
+    .camera-name {
+        font-weight: 500;
+    }
+
+    .camera-status {
+        font-size: 0.8em;
+    }
+
+    .camera-status.connected {
+        color: #28a745;
+    }
+
+    .camera-status.disconnected {
+        color: #dc3545;
+    }
+
+    .camera-info {
+        margin-top: 5px;
+        font-size: 0.85em;
+        color: #666;
+    }
+
+    .camera-info span {
+        margin-right: 10px;
+    }
+
+    .live-indicator {
+        color: #dc3545;
+        animation: pulse 1.5s infinite;
+    }
+
+    @keyframes pulse {
+        0%, 100% { opacity: 1; }
+        50% { opacity: 0.5; }
+    }
+
+    .no-cameras {
+        text-align: center;
+        color: #666;
+        padding: 20px;
+        font-style: italic;
+    }
+
+    /* Controls */
+    .controls {
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+    }
+
+    .control-group {
+        display: flex;
+        gap: 8px;
+    }
+
+    .sync-options {
+        margin-top: 15px;
+        padding-top: 15px;
+        border-top: 1px solid #eee;
+    }
+
+    .sync-options label {
+        display: block;
+        margin-bottom: 8px;
+        font-size: 0.9em;
+        color: #666;
+    }
+
+    .sync-options select {
+        width: 100%;
+        padding: 8px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+    }
+
+    /* Main Content */
+    .main-content {
+        background: white;
+        border-radius: 8px;
+        box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        padding: 15px;
+    }
+
+    #camera-details {
+        margin-bottom: 15px;
+    }
+
+    .camera-detail-panel h3 {
+        margin-top: 0;
+    }
+
+    .camera-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 8px;
+        margin-bottom: 15px;
+    }
+
+    .camera-meta {
+        font-size: 0.9em;
+        color: #666;
+    }
+
+    .camera-meta p {
+        margin: 5px 0;
+    }
+
+    /* Live View */
+    #liveview {
+        max-width: 100%;
+        max-height: 400px;
+        display: block;
+        margin: 15px auto;
+        border-radius: 4px;
+        background: #000;
+    }
+
+    /* Messages */
+    #msg {
+        margin-top: 15px;
+        padding: 15px;
+        background: #f8f9fa;
+        border-radius: 4px;
+        font-family: monospace;
+        white-space: pre-wrap;
+        min-height: 100px;
+    }
+
+    /* Buttons */
+    button {
+        padding: 8px 16px;
+        border: 1px solid #ddd;
+        border-radius: 4px;
+        background: white;
+        cursor: pointer;
+        font-size: 0.9em;
+        transition: all 0.2s;
+    }
+
+    button:hover:not(:disabled) {
+        border-color: #007bff;
+        color: #007bff;
+    }
+
+    button:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    button.primary {
+        background: #007bff;
+        color: white;
+        border-color: #007bff;
+    }
+
+    button.primary:hover:not(:disabled) {
+        background: #0056b3;
+        border-color: #0056b3;
+        color: white;
+    }
+
+    button.danger {
+        color: #dc3545;
+        border-color: #dc3545;
+    }
+
+    button.danger:hover:not(:disabled) {
+        background: #dc3545;
+        color: white;
+    }
+
+    /* Capture Results */
+    .capture-results {
+        background: #f8f9fa;
+        padding: 10px;
+        border-radius: 4px;
+    }
+
+    .capture-results h4 {
+        margin: 0 0 10px 0;
+    }
+
+    .capture-summary {
+        margin-bottom: 10px;
+    }
+
+    .success-count {
+        color: #28a745;
+        margin-right: 15px;
+    }
+
+    .fail-count {
+        color: #dc3545;
+    }
+
+    .capture-details {
+        margin: 0;
+        padding-left: 20px;
+    }
+
+    .capture-details li {
+        margin: 5px 0;
+    }
+
+    .capture-details li.error {
+        color: #dc3545;
+    }
+
+    .error {
+        color: #dc3545;
+        padding: 10px;
+        background: #f8d7da;
+        border-radius: 4px;
+    }
+
+    /* Responsive */
+    @media (max-width: 768px) {
+        .container {
+            grid-template-columns: 1fr;
+        }
+    }
+</style>
+
+<body>
+    <h2>DXO One Multi-Camera Control</h2>
+
+    <div class="warning-banner">
+        ⚠️ Only tested with microUSB connection! Lightning connector not supported.
+    </div>
+
+    <div class="container" id="main-content">
+        <!-- Camera Panel (Left) -->
+        <div class="camera-panel">
+            <div class="camera-panel-header">
+                <strong>Cameras</strong>
+                <span id="camera-count">No cameras connected</span>
+            </div>
+
+            <div id="camera-list">
+                <div class="no-cameras">No cameras connected. Click "+ Connect Camera" to add one.</div>
+            </div>
+
+            <div class="controls">
+                <button onclick="window.connectCamera()" id="btnConnectNew" class="primary">+ Connect Camera</button>
+                <div class="control-group">
+                    <button onclick="window.captureAll()" id="btnCaptureAll" disabled>📸 Capture All</button>
+                    <button onclick="window.disconnectAll()" id="btnDisconnectAll" disabled>Disconnect All</button>
+                </div>
+            </div>
+
+            <div class="sync-options">
+                <label>Sync Mode:</label>
+                <select id="syncMode" onchange="window.setSyncMode(this.value)">
+                    <option value="parallel">Parallel (Best Effort ~50ms)</option>
+                    <option value="sequential">Sequential (Reliable)</option>
+                </select>
+            </div>
+        </div>
+
+        <!-- Main Content (Right) -->
+        <div class="main-content">
+            <div id="camera-details">
+                <!-- Selected camera details appear here -->
+            </div>
+
+            <img id="liveview" alt="Live View">
+
+            <div id="msg">
+                Ready. Connect a DXO One camera to begin.
+            </div>
+        </div>
+    </div>
+
+    <footer style="text-align: center; margin-top: 20px; color: #666; font-size: 0.85em;">
+        <p>
+            Multi-camera support: Up to 4 cameras | Sync variance: ~50ms (software)
+            <br>
+            <a href="usb.html">Switch to Single-Camera Mode</a>
+        </p>
+    </footer>
+</body>
+</html>
