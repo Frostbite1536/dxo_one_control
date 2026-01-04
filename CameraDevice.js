@@ -222,7 +222,8 @@ export class CameraDevice {
 
         const rpcResponseSize = metadata[8] + (metadata[9] << 8);
 
-        if (rpcResponseSize === 0) return;
+        // INV-API-002: Consistent return type (null for no response)
+        if (rpcResponseSize === 0) return null;
 
         let rpcResponse = new Uint8Array(rpcResponseSize);
         rpcResponse.set(metadata.slice(32));
@@ -332,7 +333,8 @@ export class CameraDevice {
     /**
      * Starts live view with a callback for each frame
      *
-     * @param {Function} callback - Called with data URL for each frame
+     * @param {Function} callback - Called with (url, revokeCallback) for each frame.
+     *                              Call revokeCallback() after using the URL to free memory.
      */
     async startLiveView(callback) {
         this.shouldStopLiveView = false;
@@ -347,14 +349,19 @@ export class CameraDevice {
             if (!frame || frame.length === 0) continue;
 
             let foundHeaderIndex = this.lastJPEGFrame.indexOfMulti(JPG_HEADER);
-            let foundTrailerIndex = this.lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1);
+            // Only search for trailer if header was found (Bug fix: invalid offset)
+            let foundTrailerIndex = foundHeaderIndex >= 0
+                ? this.lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1)
+                : -1;
 
-            if (foundHeaderIndex > 0 && foundTrailerIndex > 0) {
+            // Bug fix: >= 0 instead of > 0 (header at index 0 is valid)
+            if (foundHeaderIndex >= 0 && foundTrailerIndex >= 0) {
                 this.lastJPEGFrame = this.lastJPEGFrame.slice(foundHeaderIndex, foundTrailerIndex + 2);
                 let blob = new Blob([this.lastJPEGFrame], { 'type': 'image/jpeg' });
                 let url = URL.createObjectURL(blob);
                 this.lastJPEGFrame = new Uint8Array(0);
-                callback(url);
+                // Bug fix: Pass URL revocation callback to prevent memory leak
+                callback(url, () => URL.revokeObjectURL(url));
             } else {
                 let accumulatedJPEGFrame = this.lastJPEGFrame.slice();
                 const lastLength = this.lastJPEGFrame.length;
@@ -370,14 +377,19 @@ export class CameraDevice {
                 }
 
                 foundHeaderIndex = this.lastJPEGFrame.indexOfMulti(JPG_HEADER);
-                foundTrailerIndex = this.lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1);
+                // Only search for trailer if header was found (Bug fix: invalid offset)
+                foundTrailerIndex = foundHeaderIndex >= 0
+                    ? this.lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1)
+                    : -1;
 
-                if (foundHeaderIndex > 0 && foundTrailerIndex > 0) {
+                // Bug fix: >= 0 instead of > 0 (header at index 0 is valid)
+                if (foundHeaderIndex >= 0 && foundTrailerIndex >= 0) {
                     this.lastJPEGFrame = this.lastJPEGFrame.slice(foundHeaderIndex, foundTrailerIndex + 2);
                     let blob = new Blob([this.lastJPEGFrame], { 'type': 'image/jpeg' });
                     let url = URL.createObjectURL(blob);
                     this.lastJPEGFrame = new Uint8Array(0);
-                    callback(url);
+                    // Bug fix: Pass URL revocation callback to prevent memory leak
+                    callback(url, () => URL.revokeObjectURL(url));
                 }
             }
         } while (1);

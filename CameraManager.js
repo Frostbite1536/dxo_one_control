@@ -77,10 +77,29 @@ export class CameraManager {
         this.onCameraChange = options.onCameraChange || (() => {});
         this.onCaptureComplete = options.onCaptureComplete || (() => {});
 
-        // Bind disconnect handler
+        // Bind disconnect handler and store reference for cleanup (Bug fix: memory leak)
+        this._boundDisconnectHandler = this._handleDisconnect.bind(this);
         if (this.usbBackend) {
-            this.usbBackend.addEventListener('disconnect', this._handleDisconnect.bind(this));
+            this.usbBackend.addEventListener('disconnect', this._boundDisconnectHandler);
         }
+    }
+
+    /**
+     * Cleans up the CameraManager and releases resources
+     *
+     * Removes event listeners and disconnects all cameras.
+     * Call this before discarding the CameraManager instance.
+     *
+     * @returns {Promise<void>}
+     */
+    async dispose() {
+        // Remove USB disconnect listener (Bug fix: prevent memory leak)
+        if (this.usbBackend && this._boundDisconnectHandler) {
+            this.usbBackend.removeEventListener('disconnect', this._boundDisconnectHandler);
+        }
+
+        // Disconnect all cameras
+        await this.disconnectAll();
     }
 
     /**
@@ -145,11 +164,14 @@ export class CameraManager {
             const device = await this.usbBackend.requestDevice(PARAMS_DEVICE_REQUEST);
 
             // Check if this device is already connected
+            // Use serial number for identification, or fallback to vendor-product ID
             const existingId = device.serialNumber ||
                               `${device.vendorId}-${device.productId}`;
 
             for (const [id, camera] of this.cameras) {
-                if (id.includes(existingId) || (camera.device === device)) {
+                // Bug fix: Use exact match or device reference comparison
+                // (includes() caused false positives with similar serial numbers)
+                if (id === existingId || camera.device === device) {
                     throw new Error(`Camera ${existingId} is already connected`);
                 }
             }

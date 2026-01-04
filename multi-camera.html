@@ -44,11 +44,11 @@
             return;
         }
 
-        // Render camera list
+        // Render camera list (Bug fix: escape camera ID to prevent XSS)
         list.innerHTML = cameras.map(camera => `
             <div class="camera-item ${camera.id === selectedCameraId ? 'selected' : ''}"
-                 data-camera-id="${camera.id}"
-                 onclick="window.selectCamera('${camera.id}')">
+                 data-camera-id="${escapeHtml(camera.id)}"
+                 onclick="window.selectCamera('${escapeJsString(camera.id)}')">
                 <div class="camera-header">
                     <span class="camera-name">${escapeHtml(camera.displayName)}</span>
                     <span class="camera-status ${camera.isConnected ? 'connected' : 'disconnected'}">
@@ -114,17 +114,19 @@
             return;
         }
 
+        // Bug fix: escape cameraId to prevent XSS in onclick handlers
+        const escapedId = escapeJsString(cameraId);
         const state = camera.getState();
         $('#camera-details').innerHTML = `
             <div class="camera-detail-panel">
                 <h3>${escapeHtml(state.displayName)}</h3>
                 <div class="camera-actions">
-                    <button onclick="window.takePhotoSingle('${cameraId}')">📸 Take Photo</button>
-                    <button onclick="window.toggleLiveView('${cameraId}')" id="btnLiveView-${cameraId}">
+                    <button onclick="window.takePhotoSingle('${escapedId}')">📸 Take Photo</button>
+                    <button onclick="window.toggleLiveView('${escapedId}')" id="btnLiveView-${escapeHtml(cameraId)}">
                         ${state.isLiveViewActive ? 'Stop Live View' : 'Start Live View'}
                     </button>
-                    <button onclick="window.showRenameDialog('${cameraId}')">✏️ Rename</button>
-                    <button onclick="window.disconnectCamera('${cameraId}')" class="danger">Disconnect</button>
+                    <button onclick="window.showRenameDialog('${escapedId}')">✏️ Rename</button>
+                    <button onclick="window.disconnectCamera('${escapedId}')" class="danger">Disconnect</button>
                 </div>
                 <div class="camera-meta">
                     <p><strong>ID:</strong> ${escapeHtml(state.id)}</p>
@@ -224,7 +226,12 @@
             }
 
             liveViewCameraId = cameraId;
-            camera.startLiveView(url => {
+            // Store the last revoke callback to prevent memory leaks
+            let lastRevokeCallback = null;
+            camera.startLiveView((url, revokeCallback) => {
+                // Revoke previous URL to free memory
+                if (lastRevokeCallback) lastRevokeCallback();
+                lastRevokeCallback = revokeCallback;
                 if (url) $('#liveview').src = url;
             });
         }
@@ -272,6 +279,22 @@
         const div = document.createElement('div');
         div.textContent = str;
         return div.innerHTML;
+    }
+
+    /**
+     * Escapes a string for safe use in JavaScript string literals (single-quoted)
+     * Prevents XSS when embedding values in onclick handlers
+     */
+    function escapeJsString(str) {
+        if (!str) return '';
+        return str
+            .replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/"/g, '\\"')
+            .replace(/</g, '\\x3C')
+            .replace(/>/g, '\\x3E')
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '\\r');
     }
 
     // Check WebUSB availability on load
