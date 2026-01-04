@@ -14,43 +14,100 @@
 ## High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                    dxo1control                          │
-├─────────────────────────┬───────────────────────────────┤
-│   USB Control Layer     │   Post-Processing Layer       │
-│                         │                               │
-│  ┌──────────────┐      │   ┌────────────────┐         │
-│  │  dxo1usb.js  │      │   │ resizeDNG.mjs  │         │
-│  │              │      │   │                │         │
-│  │ - WebUSB API │      │   │ - DNG Reader   │         │
-│  │ - Camera Cmd │      │   │ - Image Resize │         │
-│  │ - u8a utils  │      │   │ - JPG Export   │         │
-│  └──────────────┘      │   └────────────────┘         │
-│         │               │          │                    │
-│         ▼               │          ▼                    │
-│  ┌──────────────┐      │   ┌────────────────┐         │
-│  │  usb.html    │      │   │  File System   │         │
-│  │ (Demo/UI)    │      │   │                │         │
-│  └──────────────┘      │   └────────────────┘         │
-└─────────────────────────┴───────────────────────────────┘
-         │                              │
-         ▼                              ▼
-  ┌──────────────┐            ┌──────────────────┐
-  │  DXO One     │            │  DNG/JPG Files   │
-  │  Camera      │            │                  │
-  │  (microUSB)  │            │                  │
-  └──────────────┘            └──────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                              dxo1control                                 │
+├─────────────────────────────────┬───────────────────────────────────────┤
+│        USB Control Layer        │       Post-Processing Layer           │
+│                                 │                                       │
+│  ┌───────────────────────────┐ │   ┌────────────────┐                  │
+│  │      CameraManager        │ │   │ resizeDNG.mjs  │                  │
+│  │  (Multi-Camera Support)   │ │   │                │                  │
+│  │  - Up to 4 cameras        │ │   │ - DNG Reader   │                  │
+│  │  - Synchronized capture   │ │   │ - Image Resize │                  │
+│  │  - Parallel operations    │ │   │ - JPG Export   │                  │
+│  └───────────┬───────────────┘ │   └────────────────┘                  │
+│              │                  │          │                            │
+│  ┌───────────▼───────────────┐ │          ▼                            │
+│  │      CameraDevice         │ │   ┌────────────────┐                  │
+│  │  (Per-Camera State)       │ │   │  File System   │                  │
+│  │  - Connection state       │ │   │                │                  │
+│  │  - Live view              │ │   └────────────────┘                  │
+│  │  - Settings cache         │ │                                       │
+│  └───────────┬───────────────┘ │                                       │
+│              │                  │                                       │
+│  ┌───────────▼───────────────┐ │                                       │
+│  │       dxo1usb.js          │ │                                       │
+│  │  (Legacy Single-Camera)   │ │                                       │
+│  │  - WebUSB API             │ │                                       │
+│  │  - Camera Commands        │ │                                       │
+│  │  - u8a utils              │ │                                       │
+│  └───────────────────────────┘ │                                       │
+│              │                  │                                       │
+│              ▼                  │                                       │
+│  ┌───────────────────────────┐ │                                       │
+│  │   usb.html (Single)       │ │                                       │
+│  │   multi-camera.html       │ │                                       │
+│  │   (Demo/UI)               │ │                                       │
+│  └───────────────────────────┘ │                                       │
+└─────────────────────────────────┴───────────────────────────────────────┘
+              │
+              ▼
+  ┌─────────────────────────────┐
+  │  DXO One Cameras (1-4)      │
+  │  (microUSB connection)      │
+  └─────────────────────────────┘
 ```
 
 ## Component Breakdown
 
-### 1. USB Control Layer (`dxo1usb.js`)
+### 1. Multi-Camera Layer
+
+#### CameraManager (`CameraManager.js`)
 
 **Responsibilities:**
-- Establish and manage WebUSB connection to DXO One camera
+- Manage connections to up to 4 DXO One cameras simultaneously
+- Provide synchronized capture across all cameras
+- Handle partial failures gracefully (INV-MULTI-003)
+- Support parallel and sequential capture modes
+- Track camera list and notify on changes
+
+**Key Methods:**
+- `connectCamera(nickname)` - Connect a new camera with optional name
+- `disconnectCamera(cameraId)` - Disconnect a specific camera
+- `captureAll()` - Capture on all cameras (parallel or sequential)
+- `sendCommandToAll(method, params)` - Send command to all cameras
+
+**Dependencies:**
+- CameraDevice for individual camera management
+- WebUSB API (browser standard)
+
+#### CameraDevice (`CameraDevice.js`)
+
+**Responsibilities:**
+- Manage a single DXO One camera connection
+- Track per-camera state (connected, live view, battery, errors)
+- Provide unique identification (serial number or generated ID)
+- Handle USB communication for one camera
+- Support live view with callback
+
+**Key Properties:**
+- `id` - Unique camera identifier (INV-MULTI-001)
+- `displayName` - User-friendly name (nickname or generated)
+- `isConnected` - Current connection state
+- `batteryLevel` - Cached battery status
+
+**Dependencies:**
+- WebUSB API (browser standard)
+- `u8a.js` for Uint8Array utilities
+
+### 2. Legacy USB Control Layer (`dxo1usb.js`)
+
+**Responsibilities:**
+- Establish and manage WebUSB connection to a single DXO One camera
 - Send commands to camera (capture, settings, etc.)
 - Handle camera responses and events
 - Provide programmatic API for camera control
+- Export CameraManager and CameraDevice for multi-camera use
 
 **Dependencies:**
 - WebUSB API (browser standard)
@@ -60,7 +117,9 @@
 - USB communication protocol specific to DXO One
 - Command/response message format
 
-### 2. Utility Layer (`u8a.js`)
+**Note:** The original `open()` function is maintained for backward compatibility. New applications should use CameraManager for multi-camera support.
+
+### 3. Utility Layer (`u8a.js`)
 
 **Responsibilities:**
 - Uint8Array manipulation utilities
@@ -69,18 +128,20 @@
 
 **Dependencies:** None (pure JavaScript utilities)
 
-### 3. Web Interface (`usb.html`)
+### 4. Web Interface (`usb.html`, `multi-camera.html`)
 
 **Responsibilities:**
 - Provide user interface for camera control
 - Demonstrate WebUSB API usage
 - Live camera control demo
+- Multi-camera management UI (multi-camera.html)
 
 **Dependencies:**
-- `dxo1usb.js`
+- `dxo1usb.js` (single-camera mode)
+- `CameraManager.js` (multi-camera mode)
 - WebUSB-compatible browser
 
-### 4. Post-Processing Tool (`resizeDNG.mjs`)
+### 5. Post-Processing Tool (`resizeDNG.mjs`)
 
 **Responsibilities:**
 - Read DNG (Digital Negative) files from DXO One
@@ -170,6 +231,24 @@
 - ❌ Doesn't support Lightning connector
 - ❌ Warning needed in documentation
 
+### Decision: Multi-Camera Support with Software Synchronization
+**Rationale**: Enable control of up to 4 DXO One cameras for 360°, stereo, and multi-angle photography. Software-based synchronization provides ~50ms variance, which is sufficient for most use cases.
+
+**Trade-offs:**
+- ✅ Enables new use cases (360°, stereo, product photography)
+- ✅ No hardware modifications required
+- ✅ Works with existing cameras
+- ✅ Backward compatible with single-camera API
+- ❌ ~50ms sync variance (not suitable for < 1ms requirements)
+- ❌ USB bandwidth may be shared (recommend multiple USB controllers)
+- ❌ Requires multiple cameras (cost)
+
+**Invariants Applied:**
+- INV-MULTI-001: Camera Identification
+- INV-MULTI-002: Maximum Camera Limit (4)
+- INV-MULTI-003: Partial Failure Handling
+- INV-MULTI-004: Synchronization Accuracy Documentation
+
 ## Security Considerations
 
 ### USB Access Control
@@ -233,5 +312,5 @@
 ---
 
 **Last Updated**: 2026-01-04
-**Document Version**: 1.0
-**Status**: Initial architecture documentation
+**Document Version**: 1.1
+**Status**: Multi-camera support added

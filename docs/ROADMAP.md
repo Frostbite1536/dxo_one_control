@@ -16,13 +16,31 @@ This roadmap outlines the planned development phases for dxo1control. The projec
 - [x] WebUSB demo interface (`usb.html`)
 - [x] DNG post-processing tool (`resizeDNG.mjs`)
 - [x] Uint8Array utilities (`u8a.js`)
-- [ ] **ARCHITECTURE.md** - System design documentation
-- [ ] **INVARIANTS.md** - Non-negotiable rules and constraints
-- [ ] **ROADMAP.md** - This implementation plan
-- [ ] **prompts/engineering.md** - Customized coding guidelines
+- [x] **ARCHITECTURE.md** - System design documentation
+- [x] **INVARIANTS.md** - Non-negotiable rules and constraints
+- [x] **ROADMAP.md** - This implementation plan
+- [x] **prompts/engineering.md** - Customized coding guidelines
+- [x] **Multi-camera support** - CameraManager, CameraDevice (early delivery from Phase 4)
+- [x] **Multi-camera UI** - multi-camera.html interface
 - [ ] **CI/CD Pipeline** - Automated testing and validation
 - [ ] **API Documentation** - JSDoc comments and generated docs
 - [ ] **Usage Examples** - Code samples and tutorials
+
+### Early Delivery: Multi-Camera Support 🎉
+
+Multi-camera support has been implemented ahead of schedule (originally planned for Phase 4):
+
+- **CameraManager.js** - Manages up to 4 cameras simultaneously
+- **CameraDevice.js** - Per-camera state and communication
+- **multi-camera.html** - Web UI for multi-camera control
+- **Synchronized capture** - Parallel (~50ms) or sequential modes
+- **New invariants** - INV-MULTI-001 through INV-MULTI-004
+
+Use cases enabled:
+- 360° photography (camera array)
+- Stereoscopic/3D photography
+- Multi-angle product photography
+- Scientific/research capture
 
 ### Explicit Exclusions (Not in Phase 1)
 
@@ -169,7 +187,7 @@ This roadmap outlines the planned development phases for dxo1control. The projec
   - Lazy loading for large galleries
 
 - **Advanced Features**
-  - Multi-camera support
+  - ~~Multi-camera support~~ ✅ (Delivered in Phase 1)
   - Remote camera control over network
   - Custom post-processing filters/plugins
   - RAW histogram analysis
@@ -208,7 +226,7 @@ This roadmap outlines the planned development phases for dxo1control. The projec
 - Desktop app available for Windows/Mac/Linux
 - Performance benchmarks show 2x improvement
 - Plugin system has at least 5 community plugins
-- Multi-camera support works with 4+ cameras
+- ~~Multi-camera support works with 4+ cameras~~ ✅ (Delivered in Phase 1)
 - No critical performance bottlenecks
 
 ---
@@ -297,5 +315,6 @@ Features are prioritized based on:
 ---
 
 **Last Updated**: 2026-01-04
-**Document Version**: 1.0
+**Document Version**: 1.1
 **Current Phase**: Phase 1 (Foundation & Documentation)
+**Early Deliveries**: Multi-camera support (from Phase 4)
