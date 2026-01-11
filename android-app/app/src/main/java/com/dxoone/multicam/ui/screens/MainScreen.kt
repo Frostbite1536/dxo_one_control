@@ -235,8 +235,37 @@ fun MainScreen(
                             onRename = {
                                 renameText = camera.nickname ?: ""
                                 showRenameDialog = camera.id
+                            },
+                            onToggleSelection = {
+                                viewModel.onEvent(CameraEvent.ToggleCameraSelection(camera.id))
                             }
                         )
+                    }
+                }
+
+                // Selection controls (shown when any cameras are selected)
+                if (uiState.selectedCount > 0) {
+                    Spacer(modifier = Modifier.height(8.dp))
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.Center
+                    ) {
+                        Text(
+                            text = "${uiState.selectedCount}/${uiState.connectedCount} cameras selected",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(modifier = Modifier.width(16.dp))
+                        TextButton(
+                            onClick = { viewModel.onEvent(CameraEvent.SelectAllCameras) }
+                        ) {
+                            Text("Select All")
+                        }
+                        TextButton(
+                            onClick = { viewModel.onEvent(CameraEvent.DeselectAllCameras) }
+                        ) {
+                            Text("Clear")
+                        }
                     }
                 }
             }
@@ -250,6 +279,7 @@ fun MainScreen(
             ) {
                 CaptureButton(
                     cameraCount = uiState.connectedCount,
+                    selectedCount = uiState.selectedCount,
                     isCapturing = uiState.isCapturing,
                     enabled = uiState.canCapture,
                     onClick = { viewModel.onEvent(CameraEvent.CaptureAll) }

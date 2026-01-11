@@ -20,8 +20,10 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.BatteryFull
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.CheckCircle
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.outlined.RadioButtonUnchecked
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.Icon
@@ -31,6 +33,7 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.foundation.border
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
@@ -42,16 +45,34 @@ import com.dxoone.multicam.usb.ConnectionState
 
 /**
  * Card component displaying a single camera preview and status.
+ *
+ * @param camera Camera UI state
+ * @param onDisconnect Callback when disconnect is requested
+ * @param onRename Callback when rename is requested
+ * @param onToggleSelection Callback when selection toggle is clicked
+ * @param modifier Modifier for the card
  */
 @Composable
 fun CameraPreviewCard(
     camera: CameraUiState,
     onDisconnect: () -> Unit,
     onRename: () -> Unit,
+    onToggleSelection: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    val borderColor = if (camera.isSelected) {
+        MaterialTheme.colorScheme.primary
+    } else {
+        Color.Transparent
+    }
+
     Card(
-        modifier = modifier,
+        modifier = modifier
+            .border(
+                width = if (camera.isSelected) 3.dp else 0.dp,
+                color = borderColor,
+                shape = RoundedCornerShape(12.dp)
+            ),
         shape = RoundedCornerShape(12.dp),
         elevation = CardDefaults.cardElevation(defaultElevation = 4.dp)
     ) {
@@ -163,6 +184,31 @@ fun CameraPreviewCard(
 
                 // Action buttons
                 Row {
+                    // Selection toggle
+                    IconButton(
+                        onClick = onToggleSelection,
+                        modifier = Modifier.size(32.dp)
+                    ) {
+                        Icon(
+                            imageVector = if (camera.isSelected) {
+                                Icons.Filled.CheckCircle
+                            } else {
+                                Icons.Outlined.RadioButtonUnchecked
+                            },
+                            contentDescription = if (camera.isSelected) {
+                                "Deselect camera"
+                            } else {
+                                "Select camera for capture"
+                            },
+                            modifier = Modifier.size(20.dp),
+                            tint = if (camera.isSelected) {
+                                MaterialTheme.colorScheme.primary
+                            } else {
+                                Color.Gray
+                            }
+                        )
+                    }
+
                     IconButton(
                         onClick = onRename,
                         modifier = Modifier.size(32.dp)

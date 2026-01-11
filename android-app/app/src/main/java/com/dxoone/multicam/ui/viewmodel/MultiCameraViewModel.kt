@@ -46,6 +46,9 @@ class MultiCameraViewModel @Inject constructor(
     // Available USB devices (not yet connected)
     private var availableDevices: List<UsbDevice> = emptyList()
 
+    // Track which cameras are selected for capture (by camera ID)
+    private val selectedCameraIds = mutableSetOf<String>()
+
     init {
         // Check USB Host support
         _uiState.update {
@@ -87,6 +90,9 @@ class MultiCameraViewModel @Inject constructor(
             is CameraEvent.SetCaptureMode -> setCaptureMode(event.mode)
             is CameraEvent.DismissError -> dismissError()
             is CameraEvent.PreFocusAll -> preFocusAll()
+            is CameraEvent.ToggleCameraSelection -> toggleCameraSelection(event.cameraId)
+            is CameraEvent.SelectAllCameras -> selectAllCameras()
+            is CameraEvent.DeselectAllCameras -> deselectAllCameras()
         }
     }
 
@@ -149,7 +155,15 @@ class MultiCameraViewModel @Inject constructor(
     }
 
     private fun captureAll() {
-        val cameras = usbDeviceManager.connectedCameras.value.values.toList()
+        val allCameras = usbDeviceManager.connectedCameras.value
+
+        // Filter to selected cameras only, or all if none selected
+        val cameras = if (selectedCameraIds.isNotEmpty()) {
+            allCameras.filterKeys { it in selectedCameraIds }.values.toList()
+        } else {
+            allCameras.values.toList()
+        }
+
         if (cameras.isEmpty()) return
 
         _uiState.update { it.copy(isCapturing = true) }
@@ -252,7 +266,41 @@ class MultiCameraViewModel @Inject constructor(
         _uiState.update { it.copy(error = null) }
     }
 
+    /**
+     * Toggle selection state of a specific camera.
+     */
+    private fun toggleCameraSelection(cameraId: String) {
+        if (selectedCameraIds.contains(cameraId)) {
+            selectedCameraIds.remove(cameraId)
+        } else {
+            selectedCameraIds.add(cameraId)
+        }
+        // Refresh UI to show updated selection
+        updateCameraStates(usbDeviceManager.connectedCameras.value.values.toList())
+    }
+
+    /**
+     * Select all connected cameras.
+     */
+    private fun selectAllCameras() {
+        selectedCameraIds.clear()
+        selectedCameraIds.addAll(usbDeviceManager.connectedCameras.value.keys)
+        updateCameraStates(usbDeviceManager.connectedCameras.value.values.toList())
+    }
+
+    /**
+     * Deselect all cameras (will capture all when none selected).
+     */
+    private fun deselectAllCameras() {
+        selectedCameraIds.clear()
+        updateCameraStates(usbDeviceManager.connectedCameras.value.values.toList())
+    }
+
     private fun updateCameraStates(cameras: List<CameraConnection>) {
+        // Clean up selection state for disconnected cameras
+        val connectedIds = cameras.map { it.id }.toSet()
+        selectedCameraIds.retainAll(connectedIds)
+
         val cameraStates = cameras.map { camera ->
             CameraUiState(
                 id = camera.id,
@@ -260,7 +308,8 @@ class MultiCameraViewModel @Inject constructor(
                 nickname = camera.nickname,
                 connectionState = camera.connectionState.value,
                 batteryLevel = camera.batteryLevel.value,
-                liveViewFrame = camera.liveViewFrame.value
+                liveViewFrame = camera.liveViewFrame.value,
+                isSelected = camera.id in selectedCameraIds
             )
         }
 

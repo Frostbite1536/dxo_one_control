@@ -28,15 +28,24 @@ import androidx.compose.ui.unit.dp
 
 /**
  * Large circular capture button for triggering multi-camera capture.
+ *
+ * @param cameraCount Total number of connected cameras
+ * @param selectedCount Number of cameras selected (0 = all will be captured)
+ * @param isCapturing Whether capture is in progress
+ * @param enabled Whether the button is enabled
+ * @param onClick Callback when button is clicked
  */
 @Composable
 fun CaptureButton(
     cameraCount: Int,
+    selectedCount: Int = 0,
     isCapturing: Boolean,
     enabled: Boolean,
     onClick: () -> Unit,
     modifier: Modifier = Modifier
 ) {
+    // Determine how many cameras will be captured
+    val captureCount = if (selectedCount > 0) selectedCount else cameraCount
     val interactionSource = remember { MutableInteractionSource() }
     val isPressed by interactionSource.collectIsPressedAsState()
 
@@ -94,12 +103,11 @@ fun CaptureButton(
         Spacer(modifier = Modifier.height(8.dp))
 
         Text(
-            text = if (isCapturing) {
-                "Capturing..."
-            } else if (cameraCount > 0) {
-                "Capture All ($cameraCount)"
-            } else {
-                "No Cameras"
+            text = when {
+                isCapturing -> "Capturing..."
+                cameraCount == 0 -> "No Cameras"
+                selectedCount > 0 -> "Capture ($selectedCount of $cameraCount)"
+                else -> "Capture All ($cameraCount)"
             },
             style = MaterialTheme.typography.labelLarge,
             fontWeight = FontWeight.Medium,
