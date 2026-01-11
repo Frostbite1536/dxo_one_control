@@ -136,6 +136,22 @@ class MultiCameraViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(error = "Failed to connect to camera")
                 }
+            } else {
+                // Auto-start live view for connected camera
+                startLiveViewForCamera(connection)
+            }
+        }
+    }
+
+    /**
+     * Start live view streaming for a camera.
+     * Updates the UI state when frames are received.
+     */
+    private fun startLiveViewForCamera(camera: CameraConnection) {
+        viewModelScope.launch {
+            camera.startLiveView { bitmap ->
+                // Update UI state when new frame arrives
+                updateCameraStates(usbDeviceManager.connectedCameras.value.values.toList())
             }
         }
     }

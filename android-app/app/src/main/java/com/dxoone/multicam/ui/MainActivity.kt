@@ -28,6 +28,7 @@ import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
 import com.dxoone.multicam.domain.model.Screen
 import com.dxoone.multicam.ui.screens.MainScreen
+import com.dxoone.multicam.ui.screens.SettingsScreen
 import com.dxoone.multicam.ui.theme.DxoOneMultiCamTheme
 import dagger.hilt.android.AndroidEntryPoint
 
@@ -103,45 +104,6 @@ class MainActivity : ComponentActivity() {
     }
 }
 
-/**
- * Placeholder Settings screen.
- */
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-fun SettingsScreen(onNavigateBack: () -> Unit) {
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text("Settings") },
-                navigationIcon = {
-                    IconButton(onClick = onNavigateBack) {
-                        Icon(
-                            imageVector = Icons.AutoMirrored.Filled.ArrowBack,
-                            contentDescription = "Back"
-                        )
-                    }
-                }
-            )
-        }
-    ) { paddingValues ->
-        Column(
-            modifier = Modifier
-                .fillMaxSize()
-                .padding(paddingValues)
-                .padding(16.dp)
-        ) {
-            Text(
-                text = "Settings",
-                style = MaterialTheme.typography.headlineMedium
-            )
-            Spacer(modifier = Modifier.height(16.dp))
-            Text(
-                text = "Camera settings and preferences will be available here.",
-                style = MaterialTheme.typography.bodyMedium
-            )
-        }
-    }
-}
 
 /**
  * Placeholder Gallery screen.
