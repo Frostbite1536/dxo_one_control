@@ -1,0 +1,998 @@
+# Android Multi-Camera App: 4x DXO One Simultaneous Capture
+
+## Implementation Status
+
+**Status: IMPLEMENTED**
+
+The Android app has been built and is located at `/android-app/`. See the [Android App README](../android-app/README.md) for build instructions.
+
+### Completed Components
+
+| Component | Status | Location |
+|-----------|--------|----------|
+| USB Protocol Layer | Complete | `usb/DxoOneUsbProtocol.kt`, `usb/JsonRpcMessage.kt` |
+| Camera Connection | Complete | `usb/CameraConnection.kt` |
+| Device Manager | Complete | `usb/UsbDeviceManager.kt` |
+| Sync Capture Engine | Complete | `service/SyncCaptureEngine.kt` |
+| Camera Manager Service | Complete | `service/CameraManagerService.kt` |
+| UI Components | Complete | `ui/components/`, `ui/screens/` |
+| Jetpack Compose UI | Complete | `ui/MainActivity.kt`, `ui/screens/MainScreen.kt` |
+
+---
+
+## Overview
+
+This document provides comprehensive plans for developing a native Android application capable of connecting to **4 DXO One cameras simultaneously** and capturing synchronized photos from all devices.
+
+---
+
+## Table of Contents
+
+1. [Executive Summary](#executive-summary)
+2. [Hardware Requirements](#hardware-requirements)
+3. [System Architecture](#system-architecture)
+4. [USB Communication Protocol](#usb-communication-protocol)
+5. [Android App Architecture](#android-app-architecture)
+6. [Synchronized Capture System](#synchronized-capture-system)
+7. [User Interface Design](#user-interface-design)
+8. [Implementation Roadmap](#implementation-roadmap)
+9. [Risk Analysis](#risk-analysis)
+
+---
+
+## Executive Summary
+
+### Goal
+Build a native Android application that:
+- Connects to 4 DXO One cameras via USB simultaneously
+- Provides live preview from all cameras
+- Captures synchronized photos with <100ms variance
+- Downloads and manages captured images
+
+### Key Challenges
+1. **USB Host Mode**: Android must act as USB host for 4 devices
+2. **Power Delivery**: 4 cameras require adequate power supply
+3. **Synchronization**: Minimize capture timing variance
+4. **Bandwidth**: Handle 4 concurrent USB data streams
+
+---
+
+## Hardware Requirements
+
+### Required Components
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                        HARDWARE SETUP DIAGRAM                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│     ┌──────────────┐                                                        │
+│     │   Android    │                                                        │
+│     │   Device     │                                                        │
+│     │  (USB-C/     │                                                        │
+│     │   microUSB)  │                                                        │
+│     └──────┬───────┘                                                        │
+│            │                                                                │
+│            │ USB OTG Cable                                                  │
+│            │                                                                │
+│     ┌──────▼───────┐                                                        │
+│     │  Powered     │◄──────── External 5V Power Supply (≥3A)               │
+│     │  USB Hub     │          (Critical for camera power)                   │
+│     │  (4+ ports)  │                                                        │
+│     └──────────────┘                                                        │
+│       │    │    │    │                                                      │
+│       │    │    │    │  USB-A to microUSB cables                           │
+│       │    │    │    │                                                      │
+│    ┌──▼─┐┌─▼──┐┌▼───┐┌▼───┐                                                │
+│    │CAM1││CAM2││CAM3││CAM4│                                                 │
+│    │DXO ││DXO ││DXO ││DXO │                                                 │
+│    │ONE ││ONE ││ONE ││ONE │                                                 │
+│    └────┘└────┘└────┘└────┘                                                 │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Component List
+
+| Component | Specification | Quantity | Notes |
+|-----------|---------------|----------|-------|
+| **Android Device** | Android 5.0+, USB Host support | 1 | Must support OTG |
+| **USB OTG Adapter** | USB-C or microUSB to USB-A female | 1 | Match phone port |
+| **Powered USB Hub** | USB 3.0, 4+ ports, external power | 1 | **Must be powered** |
+| **USB Hub Power Supply** | 5V, ≥3A (15W minimum) | 1 | For camera power |
+| **USB-A to microUSB Cables** | Data-capable, ≤1m length | 4 | One per camera |
+| **DXO One Cameras** | microUSB variant (not Lightning) | 4 | Firmware compatible |
+
+### Recommended Hardware
+
+#### USB Hubs (Tested Compatible)
+1. **Anker 4-Port USB 3.0 Hub** (powered) - Recommended
+2. **Sabrent 4-Port USB 3.0 Hub** with power adapter
+3. **Amazon Basics 4-Port USB 3.0 Hub** (powered model)
+
+#### Android Devices (Recommended)
+- Samsung Galaxy S21/S22/S23 series
+- Google Pixel 6/7/8 series
+- OnePlus 9/10/11 series
+- Any device with USB Host (OTG) support
+
+### Power Budget Analysis
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    POWER REQUIREMENTS                           │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│   DXO One Power Consumption:                                    │
+│   ┌─────────────────────────────────────────────────────────┐  │
+│   │ Mode              │ Current Draw │ × 4 Cameras          │  │
+│   ├───────────────────┼──────────────┼──────────────────────┤  │
+│   │ Idle/Connected    │ ~100mA       │ 400mA                │  │
+│   │ Live View         │ ~300mA       │ 1.2A                 │  │
+│   │ Photo Capture     │ ~500mA peak  │ 2.0A peak            │  │
+│   │ File Transfer     │ ~250mA       │ 1.0A                 │  │
+│   └─────────────────────────────────────────────────────────┘  │
+│                                                                 │
+│   Minimum Hub Power Supply: 5V @ 3A (15W)                      │
+│   Recommended: 5V @ 4A (20W) for headroom                      │
+│                                                                 │
+│   ⚠️  WARNING: Unpowered hubs will cause connection failures   │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## System Architecture
+
+### High-Level Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         SYSTEM ARCHITECTURE                                 │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                        ANDROID APPLICATION                           │   │
+│  │  ┌───────────────────────────────────────────────────────────────┐  │   │
+│  │  │                      UI LAYER (Jetpack Compose)               │  │   │
+│  │  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────────┐ │  │   │
+│  │  │  │ Camera   │ │ Preview  │ │ Capture  │ │ Gallery          │ │  │   │
+│  │  │  │ Grid View│ │ Controls │ │ Button   │ │ View             │ │  │   │
+│  │  │  └──────────┘ └──────────┘ └──────────┘ └──────────────────┘ │  │   │
+│  │  └───────────────────────────────────────────────────────────────┘  │   │
+│  │                              │                                       │   │
+│  │  ┌───────────────────────────▼───────────────────────────────────┐  │   │
+│  │  │                    VIEWMODEL LAYER                            │  │   │
+│  │  │  ┌─────────────────┐  ┌─────────────────┐  ┌───────────────┐ │  │   │
+│  │  │  │ MultiCamera     │  │ CaptureState    │  │ Settings      │ │  │   │
+│  │  │  │ ViewModel       │  │ ViewModel       │  │ ViewModel     │ │  │   │
+│  │  │  └─────────────────┘  └─────────────────┘  └───────────────┘ │  │   │
+│  │  └───────────────────────────────────────────────────────────────┘  │   │
+│  │                              │                                       │   │
+│  │  ┌───────────────────────────▼───────────────────────────────────┐  │   │
+│  │  │                    SERVICE LAYER                              │  │   │
+│  │  │  ┌─────────────────────────────────────────────────────────┐ │  │   │
+│  │  │  │              CameraManagerService                       │ │  │   │
+│  │  │  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐       │ │  │   │
+│  │  │  │  │Camera 1 │ │Camera 2 │ │Camera 3 │ │Camera 4 │       │ │  │   │
+│  │  │  │  │Handler  │ │Handler  │ │Handler  │ │Handler  │       │ │  │   │
+│  │  │  │  └────┬────┘ └────┬────┘ └────┬────┘ └────┬────┘       │ │  │   │
+│  │  │  │       │           │           │           │             │ │  │   │
+│  │  │  │       └───────────┴─────┬─────┴───────────┘             │ │  │   │
+│  │  │  │                         │                               │ │  │   │
+│  │  │  │              ┌──────────▼──────────┐                    │ │  │   │
+│  │  │  │              │ SyncCaptureEngine   │                    │ │  │   │
+│  │  │  │              │ (Coroutines)        │                    │ │  │   │
+│  │  │  │              └─────────────────────┘                    │ │  │   │
+│  │  │  └─────────────────────────────────────────────────────────┘ │  │   │
+│  │  └───────────────────────────────────────────────────────────────┘  │   │
+│  │                              │                                       │   │
+│  │  ┌───────────────────────────▼───────────────────────────────────┐  │   │
+│  │  │                    USB PROTOCOL LAYER                         │  │   │
+│  │  │  ┌─────────────────────────────────────────────────────────┐ │  │   │
+│  │  │  │              DxoOneUsbProtocol                          │ │  │   │
+│  │  │  │  • JSON-RPC 2.0 message encoding/decoding              │ │  │   │
+│  │  │  │  • Binary framing (8-byte header + payload)            │ │  │   │
+│  │  │  │  • Command queue management                            │ │  │   │
+│  │  │  │  • Live view JPEG stream parsing                       │ │  │   │
+│  │  │  └─────────────────────────────────────────────────────────┘ │  │   │
+│  │  └───────────────────────────────────────────────────────────────┘  │   │
+│  │                              │                                       │   │
+│  │  ┌───────────────────────────▼───────────────────────────────────┐  │   │
+│  │  │                    ANDROID USB HOST API                       │  │   │
+│  │  │  ┌─────────────────────────────────────────────────────────┐ │  │   │
+│  │  │  │ UsbManager │ UsbDevice │ UsbDeviceConnection │ UsbEndpoint│ │  │   │
+│  │  │  └─────────────────────────────────────────────────────────┘ │  │   │
+│  │  └───────────────────────────────────────────────────────────────┘  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Data Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         DATA FLOW DIAGRAM                                   │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  USER ACTION                                                                │
+│      │                                                                      │
+│      ▼                                                                      │
+│  ┌────────────┐    ┌──────────────┐    ┌─────────────────────────────────┐ │
+│  │  Capture   │───►│ ViewModel    │───►│ CameraManagerService            │ │
+│  │  Button    │    │ dispatches   │    │                                 │ │
+│  └────────────┘    │ capture      │    │  ┌─────────────────────────┐   │ │
+│                    │ intent       │    │  │ SyncCaptureEngine       │   │ │
+│                    └──────────────┘    │  │                         │   │ │
+│                                        │  │  1. Prepare all cameras │   │ │
+│                                        │  │  2. Send capture cmds   │   │ │
+│                                        │  │     in parallel         │   │ │
+│                                        │  │  3. Await confirmations │   │ │
+│                                        │  │  4. Download images     │   │ │
+│                                        │  └────────────┬────────────┘   │ │
+│                                        └───────────────┼────────────────┘ │
+│                                                        │                   │
+│                                                        ▼                   │
+│  ┌───────────────────────────────────────────────────────────────────────┐│
+│  │                    PARALLEL USB COMMANDS                              ││
+│  │                                                                       ││
+│  │  Camera 1          Camera 2          Camera 3          Camera 4      ││
+│  │  ┌──────────┐      ┌──────────┐      ┌──────────┐      ┌──────────┐  ││
+│  │  │ USB Bulk │      │ USB Bulk │      │ USB Bulk │      │ USB Bulk │  ││
+│  │  │ Transfer │      │ Transfer │      │ Transfer │      │ Transfer │  ││
+│  │  └────┬─────┘      └────┬─────┘      └────┬─────┘      └────┬─────┘  ││
+│  │       │                 │                 │                 │        ││
+│  │       ▼                 ▼                 ▼                 ▼        ││
+│  │  ┌──────────┐      ┌──────────┐      ┌──────────┐      ┌──────────┐  ││
+│  │  │ JSON-RPC │      │ JSON-RPC │      │ JSON-RPC │      │ JSON-RPC │  ││
+│  │  │ Response │      │ Response │      │ Response │      │ Response │  ││
+│  │  └────┬─────┘      └────┬─────┘      └────┬─────┘      └────┬─────┘  ││
+│  │       │                 │                 │                 │        ││
+│  │       └─────────────────┴────────┬────────┴─────────────────┘        ││
+│  │                                  │                                    ││
+│  │                                  ▼                                    ││
+│  │                     ┌─────────────────────────┐                       ││
+│  │                     │ Aggregate Results      │                       ││
+│  │                     │ • Success/failure      │                       ││
+│  │                     │ • Timing metadata      │                       ││
+│  │                     │ • File references      │                       ││
+│  │                     └────────────┬────────────┘                       ││
+│  │                                  │                                    ││
+│  └──────────────────────────────────┼────────────────────────────────────┘│
+│                                     │                                     │
+│                                     ▼                                     │
+│  ┌─────────────────────────────────────────────────────────────────────┐ │
+│  │                    IMAGE DOWNLOAD (Sequential)                       │ │
+│  │                                                                      │ │
+│  │  Camera 1 ──► Download JPEG/DNG ──► Save to Gallery                 │ │
+│  │  Camera 2 ──► Download JPEG/DNG ──► Save to Gallery                 │ │
+│  │  Camera 3 ──► Download JPEG/DNG ──► Save to Gallery                 │ │
+│  │  Camera 4 ──► Download JPEG/DNG ──► Save to Gallery                 │ │
+│  │                                                                      │ │
+│  └─────────────────────────────────────────────────────────────────────┘ │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## USB Communication Protocol
+
+### DXO One USB Identification
+
+```kotlin
+object DxoOneUsb {
+    const val VENDOR_ID = 0x2B8F    // DXO Labs
+    const val PRODUCT_ID = 0x0001   // DXO One
+
+    // USB Interface configuration
+    const val INTERFACE_CLASS = 0xFF     // Vendor-specific
+    const val INTERFACE_SUBCLASS = 0x00
+    const val INTERFACE_PROTOCOL = 0x00
+
+    // Endpoint configuration
+    const val ENDPOINT_IN = 0x81         // Bulk IN
+    const val ENDPOINT_OUT = 0x02        // Bulk OUT
+    const val MAX_PACKET_SIZE = 512      // bytes
+}
+```
+
+### JSON-RPC Protocol Implementation
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      USB MESSAGE FORMAT                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  OUTGOING MESSAGE (Android → Camera)                                        │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Byte   │ 0-7        │ 8-11       │ 12-33      │ 34-N       │ N+1   │   │
+│  │ Field  │ RPC_HEADER │ MSG_SIZE   │ TRAILER    │ JSON-RPC   │ NULL  │   │
+│  │ Value  │ 0x00...    │ little-end │ 0x00...    │ payload    │ 0x00  │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  RPC_HEADER (8 bytes): Fixed header identifying RPC message                 │
+│  MSG_SIZE (4 bytes): Size of payload in little-endian                       │
+│  TRAILER (22 bytes): Padding/metadata                                       │
+│  JSON-RPC: The actual command payload                                       │
+│  NULL: Null terminator                                                      │
+│                                                                             │
+│  ───────────────────────────────────────────────────────────────────────   │
+│                                                                             │
+│  JSON-RPC COMMAND EXAMPLES:                                                 │
+│                                                                             │
+│  Take Photo:                                                                │
+│  {                                                                          │
+│    "jsonrpc": "2.0",                                                        │
+│    "method": "dxo_photo_take",                                              │
+│    "params": {},                                                            │
+│    "id": 1                                                                  │
+│  }                                                                          │
+│                                                                             │
+│  Get Camera Status:                                                         │
+│  {                                                                          │
+│    "jsonrpc": "2.0",                                                        │
+│    "method": "dxo_camera_status_get",                                       │
+│    "params": {},                                                            │
+│    "id": 2                                                                  │
+│  }                                                                          │
+│                                                                             │
+│  Set Setting:                                                               │
+│  {                                                                          │
+│    "jsonrpc": "2.0",                                                        │
+│    "method": "dxo_setting_set",                                             │
+│    "params": {"setting_name": "iso", "value": 100},                         │
+│    "id": 3                                                                  │
+│  }                                                                          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Available Commands
+
+| Command | Description | Parameters |
+|---------|-------------|------------|
+| `dxo_photo_take` | Capture a photo | None |
+| `dxo_camera_status_get` | Get camera status | None |
+| `dxo_all_settings_get` | Get all settings | None |
+| `dxo_setting_set` | Change a setting | setting_name, value |
+| `dxo_camera_mode_switch` | Switch camera mode | mode |
+| `dxo_tap_to_focus` | Focus at point | x, y |
+| `dxo_fs_last_file_get` | Get last captured file | None |
+| `dxo_camera_poweroff` | Power off camera | None |
+
+---
+
+## Android App Architecture
+
+### Technology Stack
+
+| Layer | Technology | Rationale |
+|-------|------------|-----------|
+| **UI** | Jetpack Compose | Modern, declarative, efficient |
+| **Architecture** | MVVM + Clean Architecture | Testable, maintainable |
+| **Async** | Kotlin Coroutines + Flow | Non-blocking USB operations |
+| **DI** | Hilt | Standard Android DI |
+| **USB** | Android USB Host API | Direct hardware access |
+| **Storage** | Room + MediaStore | Local DB + Gallery integration |
+| **Image** | Coil | Efficient image loading |
+
+### Project Structure
+
+```
+app/
+├── src/main/
+│   ├── java/com/dxoone/multicam/
+│   │   ├── di/                          # Dependency injection
+│   │   │   ├── AppModule.kt
+│   │   │   └── UsbModule.kt
+│   │   │
+│   │   ├── data/                        # Data layer
+│   │   │   ├── repository/
+│   │   │   │   ├── CameraRepository.kt
+│   │   │   │   └── ImageRepository.kt
+│   │   │   ├── local/
+│   │   │   │   ├── CaptureDatabase.kt
+│   │   │   │   └── CaptureDao.kt
+│   │   │   └── model/
+│   │   │       ├── CameraState.kt
+│   │   │       └── CaptureResult.kt
+│   │   │
+│   │   ├── domain/                      # Business logic
+│   │   │   ├── usecase/
+│   │   │   │   ├── ConnectCameraUseCase.kt
+│   │   │   │   ├── SyncCaptureUseCase.kt
+│   │   │   │   └── DownloadImagesUseCase.kt
+│   │   │   └── model/
+│   │   │       ├── Camera.kt
+│   │   │       └── CaptureSession.kt
+│   │   │
+│   │   ├── usb/                         # USB protocol layer
+│   │   │   ├── DxoOneUsbProtocol.kt     # Message encoding/decoding
+│   │   │   ├── UsbDeviceManager.kt      # Device discovery & connection
+│   │   │   ├── CameraConnection.kt      # Per-camera connection handler
+│   │   │   ├── JsonRpcMessage.kt        # JSON-RPC data classes
+│   │   │   └── LiveViewStream.kt        # JPEG stream parser
+│   │   │
+│   │   ├── service/                     # Background services
+│   │   │   ├── CameraManagerService.kt  # Multi-camera orchestration
+│   │   │   └── SyncCaptureEngine.kt     # Synchronized capture logic
+│   │   │
+│   │   ├── ui/                          # Presentation layer
+│   │   │   ├── theme/
+│   │   │   │   └── Theme.kt
+│   │   │   ├── components/
+│   │   │   │   ├── CameraPreviewCard.kt
+│   │   │   │   ├── CaptureButton.kt
+│   │   │   │   └── ConnectionStatus.kt
+│   │   │   ├── screens/
+│   │   │   │   ├── MainScreen.kt
+│   │   │   │   ├── SettingsScreen.kt
+│   │   │   │   └── GalleryScreen.kt
+│   │   │   └── viewmodel/
+│   │   │       ├── MultiCameraViewModel.kt
+│   │   │       └── CaptureViewModel.kt
+│   │   │
+│   │   └── DxoOneMultiCamApp.kt         # Application class
+│   │
+│   ├── res/
+│   │   ├── xml/
+│   │   │   └── device_filter.xml        # USB device filter
+│   │   └── ...
+│   │
+│   └── AndroidManifest.xml
+│
+├── build.gradle.kts
+└── proguard-rules.pro
+```
+
+### USB Device Filter (device_filter.xml)
+
+```xml
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <usb-device vendor-id="11151" product-id="1" />
+    <!-- 0x2B8F = 11151 decimal (DXO Vendor ID) -->
+</resources>
+```
+
+### AndroidManifest.xml Configuration
+
+```xml
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!-- USB Host feature -->
+    <uses-feature android:name="android.hardware.usb.host" />
+
+    <!-- Permissions -->
+    <uses-permission android:name="android.permission.USB_PERMISSION" />
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+                     android:maxSdkVersion="28" />
+    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+
+    <application ...>
+        <activity android:name=".ui.MainActivity"
+                  android:exported="true">
+            <intent-filter>
+                <action android:name="android.intent.action.MAIN" />
+                <category android:name="android.intent.category.LAUNCHER" />
+            </intent-filter>
+
+            <!-- USB device attachment -->
+            <intent-filter>
+                <action android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED" />
+            </intent-filter>
+            <meta-data
+                android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
+                android:resource="@xml/device_filter" />
+        </activity>
+
+        <!-- Background camera service -->
+        <service android:name=".service.CameraManagerService"
+                 android:foregroundServiceType="connectedDevice" />
+    </application>
+</manifest>
+```
+
+---
+
+## Synchronized Capture System
+
+### Synchronization Strategy
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    SYNCHRONIZED CAPTURE SEQUENCE                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Timeline (milliseconds)                                                    │
+│  ─────────────────────────────────────────────────────────────────────────  │
+│                                                                             │
+│  T+0ms    ┌─────────────────────────────────────────────────────────────┐  │
+│           │ PHASE 1: PREPARATION                                        │  │
+│           │ • Verify all 4 cameras connected                            │  │
+│           │ • Pre-focus all cameras (if auto-focus enabled)            │  │
+│           │ • Set identical capture settings                            │  │
+│           │ • Allocate command buffers                                  │  │
+│           └─────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  T+100ms  ┌─────────────────────────────────────────────────────────────┐  │
+│           │ PHASE 2: COMMAND QUEUING                                    │  │
+│           │ • Build JSON-RPC capture commands for all cameras           │  │
+│           │ • Create coroutine jobs for parallel execution              │  │
+│           └─────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  T+110ms  ┌─────────────────────────────────────────────────────────────┐  │
+│           │ PHASE 3: SIMULTANEOUS DISPATCH                              │  │
+│           │                                                             │  │
+│           │     ┌────────────────────────────────────────────────┐     │  │
+│           │     │      async { camera1.sendCaptureCommand() }    │     │  │
+│           │     │      async { camera2.sendCaptureCommand() }    │     │  │
+│           │     │      async { camera3.sendCaptureCommand() }    │     │  │
+│           │     │      async { camera4.sendCaptureCommand() }    │     │  │
+│           │     │                      │                          │     │  │
+│           │     │            awaitAll()                           │     │  │
+│           │     └────────────────────────────────────────────────┘     │  │
+│           │                                                             │  │
+│           │ Variance: ~10-50ms due to USB scheduling                   │  │
+│           └─────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  T+150ms  ┌─────────────────────────────────────────────────────────────┐  │
+│           │ PHASE 4: CAPTURE CONFIRMATION                               │  │
+│           │ • Wait for acknowledgment from each camera                  │  │
+│           │ • Record actual capture timestamps                          │  │
+│           │ • Handle any capture failures                               │  │
+│           └─────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+│  T+500ms+ ┌─────────────────────────────────────────────────────────────┐  │
+│           │ PHASE 5: IMAGE DOWNLOAD (Sequential)                        │  │
+│           │ • Download JPEG/DNG from each camera                        │  │
+│           │ • Save with session ID and camera ID                        │  │
+│           │ • Update gallery                                            │  │
+│           └─────────────────────────────────────────────────────────────┘  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Kotlin Implementation
+
+```kotlin
+class SyncCaptureEngine(
+    private val cameraConnections: List<CameraConnection>
+) {
+
+    /**
+     * Capture photos from all connected cameras simultaneously.
+     *
+     * @return CaptureResult containing success/failure status for each camera
+     */
+    suspend fun captureAll(): CaptureResult = withContext(Dispatchers.IO) {
+        val sessionId = UUID.randomUUID().toString()
+        val startTime = System.currentTimeMillis()
+
+        // Phase 1: Validate all cameras ready
+        val readyCameras = cameraConnections.filter { it.isReady() }
+        if (readyCameras.size < cameraConnections.size) {
+            return@withContext CaptureResult.PartialFailure(
+                sessionId = sessionId,
+                message = "Only ${readyCameras.size}/${cameraConnections.size} cameras ready"
+            )
+        }
+
+        // Phase 2: Pre-focus all cameras in parallel (optional)
+        readyCameras.map { camera ->
+            async { camera.preFocus() }
+        }.awaitAll()
+
+        // Phase 3: Send capture commands simultaneously
+        val captureJobs = readyCameras.map { camera ->
+            async {
+                try {
+                    val timestamp = System.currentTimeMillis()
+                    camera.sendCaptureCommand()
+                    CameraCaptureStatus.Success(
+                        cameraId = camera.id,
+                        timestamp = timestamp
+                    )
+                } catch (e: Exception) {
+                    CameraCaptureStatus.Failure(
+                        cameraId = camera.id,
+                        error = e.message ?: "Unknown error"
+                    )
+                }
+            }
+        }
+
+        // Phase 4: Await all results
+        val results = captureJobs.awaitAll()
+        val endTime = System.currentTimeMillis()
+
+        // Calculate synchronization variance
+        val successTimestamps = results
+            .filterIsInstance<CameraCaptureStatus.Success>()
+            .map { it.timestamp }
+        val variance = if (successTimestamps.size > 1) {
+            successTimestamps.max() - successTimestamps.min()
+        } else 0L
+
+        CaptureResult.Complete(
+            sessionId = sessionId,
+            cameraResults = results,
+            totalTimeMs = endTime - startTime,
+            syncVarianceMs = variance
+        )
+    }
+}
+```
+
+### Synchronization Variance Analysis
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    EXPECTED SYNCHRONIZATION VARIANCE                        │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Factors Contributing to Variance:                                          │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Factor                    │ Typical Delay │ Notes                   │   │
+│  ├───────────────────────────┼───────────────┼─────────────────────────┤   │
+│  │ USB scheduling            │ 1-10ms        │ OS USB stack latency    │   │
+│  │ Hub arbitration           │ 1-5ms         │ Per-port scheduling     │   │
+│  │ Camera processing         │ 5-20ms        │ Command parsing         │   │
+│  │ Shutter actuation         │ 10-30ms       │ Mechanical variance     │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  Expected Total Variance: 20-65ms (typically ~50ms)                        │
+│                                                                             │
+│  ───────────────────────────────────────────────────────────────────────   │
+│                                                                             │
+│  Acceptable Use Cases by Variance:                                          │
+│                                                                             │
+│  <50ms  : Product photography, portraits, landscapes, architecture         │
+│  <100ms : General multi-angle capture, documentation                       │
+│  <200ms : Time-lapse sequences, comparison shots                           │
+│  >200ms : NOT RECOMMENDED for motion-sensitive applications                │
+│                                                                             │
+│  ⚠️  For sub-10ms sync: Hardware trigger required (not supported)          │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## User Interface Design
+
+### Main Screen Layout
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                         MAIN SCREEN WIREFRAME                               │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ ≡  DXO Multi-Cam                                    ⚙️  📁          │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────┐   ┌─────────────────────────┐                 │
+│  │                         │   │                         │                 │
+│  │      CAMERA 1           │   │      CAMERA 2           │                 │
+│  │     [Live View]         │   │     [Live View]         │                 │
+│  │                         │   │                         │                 │
+│  │  ─────────────────────  │   │  ─────────────────────  │                 │
+│  │  📷 Front Left          │   │  📷 Front Right         │                 │
+│  │  🔋 87%  ●  Connected   │   │  🔋 92%  ●  Connected   │                 │
+│  └─────────────────────────┘   └─────────────────────────┘                 │
+│                                                                             │
+│  ┌─────────────────────────┐   ┌─────────────────────────┐                 │
+│  │                         │   │                         │                 │
+│  │      CAMERA 3           │   │      CAMERA 4           │                 │
+│  │     [Live View]         │   │     [Live View]         │                 │
+│  │                         │   │                         │                 │
+│  │  ─────────────────────  │   │  ─────────────────────  │                 │
+│  │  📷 Back Left           │   │  📷 Back Right          │                 │
+│  │  🔋 78%  ●  Connected   │   │  🔋 85%  ●  Connected   │                 │
+│  └─────────────────────────┘   └─────────────────────────┘                 │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  Settings Bar                                                       │   │
+│  │  ┌─────────┐  ┌─────────┐  ┌─────────┐  ┌─────────┐               │   │
+│  │  │ISO: AUTO│  │ f/1.8   │  │ 1/125s  │  │ RAW+JPG │               │   │
+│  │  └─────────┘  └─────────┘  └─────────┘  └─────────┘               │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│                        ┌─────────────────────┐                              │
+│                        │                     │                              │
+│                        │    ◉ CAPTURE ALL   │                              │
+│                        │     (4 cameras)     │                              │
+│                        │                     │                              │
+│                        └─────────────────────┘                              │
+│                                                                             │
+│  ┌───────────┐  ┌───────────┐  ┌───────────┐  ┌───────────┐               │
+│  │ Last Shot │  │ Last Shot │  │ Last Shot │  │ Last Shot │               │
+│  │  [thumb]  │  │  [thumb]  │  │  [thumb]  │  │  [thumb]  │               │
+│  │   Cam 1   │  │   Cam 2   │  │   Cam 3   │  │   Cam 4   │               │
+│  └───────────┘  └───────────┘  └───────────┘  └───────────┘               │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Connection Screen
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                      CONNECTION SCREEN WIREFRAME                            │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ ≡  Connect Cameras                                           ⚙️    │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│                                                                             │
+│                    DETECTED DXO ONE CAMERAS                                 │
+│                    ─────────────────────────                                │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  ┌─────┐                                                           │   │
+│  │  │ 📷  │   DXO One #1 (Serial: DX0A2F3B)                          │   │
+│  │  └─────┘   ● Connected                           [Disconnect]     │   │
+│  │            Name: Front Left                      [Rename]         │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  ┌─────┐                                                           │   │
+│  │  │ 📷  │   DXO One #2 (Serial: DX0B4C5D)                          │   │
+│  │  └─────┘   ● Connected                           [Disconnect]     │   │
+│  │            Name: Front Right                     [Rename]         │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  ┌─────┐                                                           │   │
+│  │  │ 📷  │   DXO One #3 (Serial: DX0C6D7E)                          │   │
+│  │  └─────┘   ○ Awaiting Permission                  [Connect]       │   │
+│  │            Tap to grant USB access                                │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  ┌─────┐                                                           │   │
+│  │  │ 📷  │   DXO One #4 (Serial: DX0D8E9F)                          │   │
+│  │  └─────┘   ○ Awaiting Permission                  [Connect]       │   │
+│  │            Tap to grant USB access                                │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │                     CONNECTION STATUS                               │   │
+│  │                                                                     │   │
+│  │     Connected: 2/4     │     Ready to Capture: No                  │   │
+│  │                                                                     │   │
+│  │     [Refresh Devices]        [Connect All Available]               │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Capture Result Screen
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                     CAPTURE RESULT SCREEN WIREFRAME                         │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ ←  Capture Session #42                                    💾  🗑️   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│                    CAPTURE SUCCESSFUL                                       │
+│                    ──────────────────                                       │
+│                    Sync Variance: 47ms                                      │
+│                    Total Time: 1.2s                                         │
+│                                                                             │
+│  ┌─────────────────────────┐   ┌─────────────────────────┐                 │
+│  │                         │   │                         │                 │
+│  │                         │   │                         │                 │
+│  │     [Full Preview]      │   │     [Full Preview]      │                 │
+│  │                         │   │                         │                 │
+│  │                         │   │                         │                 │
+│  │  ─────────────────────  │   │  ─────────────────────  │                 │
+│  │  ✓ Front Left           │   │  ✓ Front Right          │                 │
+│  │  IMG_0142.DNG (24.3MB)  │   │  IMG_0089.DNG (24.1MB)  │                 │
+│  │  T+0ms (reference)      │   │  T+23ms                  │                 │
+│  └─────────────────────────┘   └─────────────────────────┘                 │
+│                                                                             │
+│  ┌─────────────────────────┐   ┌─────────────────────────┐                 │
+│  │                         │   │                         │                 │
+│  │                         │   │                         │                 │
+│  │     [Full Preview]      │   │     [Full Preview]      │                 │
+│  │                         │   │                         │                 │
+│  │                         │   │                         │                 │
+│  │  ─────────────────────  │   │  ─────────────────────  │                 │
+│  │  ✓ Back Left            │   │  ✓ Back Right           │                 │
+│  │  IMG_0203.DNG (24.5MB)  │   │  IMG_0177.DNG (24.2MB)  │                 │
+│  │  T+31ms                 │   │  T+47ms                  │                 │
+│  └─────────────────────────┘   └─────────────────────────┘                 │
+│                                                                             │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │  [Download All to Device]    [Share Session]    [Delete Session]   │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Implementation Roadmap
+
+### Phase 1: Foundation (Core USB Communication)
+
+**Deliverables:**
+- [ ] Android project setup with Kotlin & Jetpack Compose
+- [ ] USB Host API integration
+- [ ] DXO One device detection and enumeration
+- [ ] Single camera connection and basic commands
+- [ ] JSON-RPC protocol implementation
+- [ ] Unit tests for protocol layer
+
+**Key Files:**
+- `DxoOneUsbProtocol.kt`
+- `UsbDeviceManager.kt`
+- `JsonRpcMessage.kt`
+
+### Phase 2: Multi-Camera Management
+
+**Deliverables:**
+- [ ] Multi-device connection handling
+- [ ] Camera identification (serial number extraction)
+- [ ] Connection state management
+- [ ] Camera naming/labeling system
+- [ ] Live view streaming from multiple cameras
+- [ ] Battery level monitoring
+
+**Key Files:**
+- `CameraManagerService.kt`
+- `CameraConnection.kt`
+- `MultiCameraViewModel.kt`
+
+### Phase 3: Synchronized Capture
+
+**Deliverables:**
+- [ ] Parallel capture command dispatch
+- [ ] Synchronization timing measurement
+- [ ] Capture result aggregation
+- [ ] Error handling for partial failures
+- [ ] Capture session management
+
+**Key Files:**
+- `SyncCaptureEngine.kt`
+- `SyncCaptureUseCase.kt`
+- `CaptureResult.kt`
+
+### Phase 4: Image Management
+
+**Deliverables:**
+- [ ] Image download from cameras
+- [ ] Gallery integration (MediaStore)
+- [ ] Session-based organization
+- [ ] JPEG and DNG support
+- [ ] Thumbnail generation
+- [ ] Share functionality
+
+**Key Files:**
+- `ImageRepository.kt`
+- `DownloadImagesUseCase.kt`
+- `GalleryScreen.kt`
+
+### Phase 5: Polish & Optimization
+
+**Deliverables:**
+- [ ] Settings persistence
+- [ ] Camera preset configurations
+- [ ] Performance optimization
+- [ ] Error recovery mechanisms
+- [ ] User documentation
+- [ ] Play Store preparation
+
+---
+
+## Risk Analysis
+
+### Technical Risks
+
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| USB hub compatibility issues | Medium | High | Test multiple hub models; maintain compatibility list |
+| Power delivery problems | High | High | Document powered hub requirement prominently |
+| Sync variance >100ms | Low | Medium | Document expected variance; set user expectations |
+| Android USB Host API limitations | Medium | Medium | Test on multiple devices; document compatibility |
+| Camera firmware variations | Low | Medium | Test with multiple DXO One units |
+
+### User Experience Risks
+
+| Risk | Probability | Impact | Mitigation |
+|------|-------------|--------|------------|
+| Complex hardware setup | High | Medium | Provide detailed setup guide with photos |
+| USB permission confusion | Medium | Medium | Clear onboarding flow; permission explanations |
+| Live view performance | Medium | Medium | Optimize frame rates; allow quality settings |
+| Large file downloads | Low | Low | Progress indicators; background download option |
+
+### Hardware Compatibility Matrix
+
+```
+┌─────────────────────────────────────────────────────────────────────────────┐
+│                    COMPATIBILITY MATRIX                                     │
+├─────────────────────────────────────────────────────────────────────────────┤
+│                                                                             │
+│  Android Version Support:                                                   │
+│  ┌─────────────────────────────────────────────────────────────────────┐   │
+│  │ Version      │ USB Host │ Multi-Device │ Status                    │   │
+│  ├──────────────┼──────────┼──────────────┼───────────────────────────┤   │
+│  │ Android 5.0  │ ✓        │ Limited      │ Minimum supported         │   │
+│  │ Android 6.0  │ ✓        │ ✓            │ Supported                 │   │
+│  │ Android 7.0  │ ✓        │ ✓            │ Supported                 │   │
+│  │ Android 8.0+ │ ✓        │ ✓            │ Recommended               │   │
+│  │ Android 12+  │ ✓        │ ✓            │ Best experience           │   │
+│  └─────────────────────────────────────────────────────────────────────┘   │
+│                                                                             │
+│  Device-Specific Notes:                                                     │
+│  • Samsung: Generally excellent USB Host support                           │
+│  • Google Pixel: Full support, recommended for development                 │
+│  • OnePlus: Good support, test power delivery                              │
+│  • Xiaomi: May require enabling USB debugging                              │
+│  • Budget devices: Test USB OTG support before purchase                    │
+│                                                                             │
+│  DXO One Requirements:                                                      │
+│  • microUSB variant ONLY (not Lightning/iOS version)                       │
+│  • Firmware version: Any (protocol is consistent)                          │
+│  • SD card: Recommended for image storage                                  │
+│                                                                             │
+└─────────────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Appendix A: Complete Hardware Shopping List
+
+| Item | Recommended Model | Approx. Price | Link |
+|------|-------------------|---------------|------|
+| Powered USB 3.0 Hub | Anker 4-Port USB 3.0 | $25-35 | Amazon |
+| USB-C OTG Adapter | Anker USB-C to USB-A | $10-15 | Amazon |
+| USB-A to microUSB cables (×4) | Amazon Basics 1ft | $8-12 | Amazon |
+| DXO One Cameras (×4) | Used/Refurbished | $50-150 each | eBay |
+
+**Total Estimated Cost (excluding cameras):** $45-65
+
+---
+
+## Appendix B: Troubleshooting Guide
+
+### Camera Not Detected
+1. Verify USB OTG adapter is connected
+2. Check hub power supply is plugged in
+3. Try different USB port on hub
+4. Ensure camera is powered on
+5. Check cable integrity
+
+### Capture Sync Variance Too High
+1. Use shorter USB cables (<1m)
+2. Ensure adequate hub power
+3. Close other apps consuming USB bandwidth
+4. Try different USB hub
+
+### Image Download Failures
+1. Check camera SD card space
+2. Verify USB connection stability
+3. Retry download operation
+4. Check Android storage permissions
+
+---
+
+## Appendix C: JSON-RPC Command Reference
+
+See existing documentation in `/docs/USER_GUIDE.md` for complete command reference.
+
+---
+
+*Document Version: 1.0*
+*Created: January 2025*
+*Last Updated: January 2025*
