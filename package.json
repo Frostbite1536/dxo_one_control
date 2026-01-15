@@ -1,11 +1,11 @@
 {
   "name": "dxo1control",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "Tools for controlling DXO One cameras and processing their image files",
   "type": "module",
   "main": "dxo1usb.js",
   "scripts": {
-    "test": "node --check dxo1usb.js && node --check u8a.js && node --check resizeDNG.mjs",
+    "test": "node --check dxo1usb.js && node --check u8a.js && node --check resizeDNG.mjs && node --check CameraManager.js && node --check CameraDevice.js",
     "lint": "echo 'Linting not yet configured'"
   },
   "keywords": [
@@ -14,7 +14,9 @@
     "camera",
     "webusb",
     "dng",
-    "photography"
+    "photography",
+    "multi-camera",
+    "android"
   ],
   "author": "jsyang <jsyang@gmail.com>",
   "license": "GPL-3.0",
@@ -23,7 +25,7 @@
     "url": "https://github.com/jsyang/dxo1control"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=18.0.0"
   },
   "devDependencies": {},
   "dependencies": {}

@@ -189,9 +189,19 @@ class DxoOneUsbProtocol(
                 metadata.forEach { jpegBuffer.add(it) }
             }
 
+            // Bug fix: Add iteration limit to prevent infinite loop
+            // Maximum expected JPEG size is ~10MB, with 512-byte packets = ~20000 iterations
+            val maxIterations = 25000
+            var iterations = 0
+
             // Continue reading until we find JPEG trailer (FFD9)
-            while (true) {
+            while (iterations < maxIterations) {
+                iterations++
                 val payload = transferIn(DxoOneConstants.MAX_PACKET_SIZE)
+                if (payload.isEmpty()) {
+                    // No more data available, exit loop
+                    break
+                }
                 payload.forEach { jpegBuffer.add(it) }
 
                 val data = jpegBuffer.toByteArray()

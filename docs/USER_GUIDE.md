@@ -554,6 +554,6 @@ node resizeDNG.mjs input.dng output.jpg
 
 ---
 
-**Version**: 1.0.0
-**Last Updated**: 2025
-**Compatibility**: DXO One cameras via microUSB connection
+**Version**: 1.1.0
+**Last Updated**: 2026-01-15
+**Compatibility**: DXO One cameras via microUSB connection (Web and Android)

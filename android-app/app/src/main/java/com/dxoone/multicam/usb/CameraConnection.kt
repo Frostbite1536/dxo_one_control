@@ -242,6 +242,9 @@ class CameraConnection(
         }
     }
 
+    // Managed scope for live view to prevent memory leaks
+    private var liveViewScope: CoroutineScope? = null
+
     /**
      * Start live view streaming.
      */
@@ -256,9 +259,12 @@ class CameraConnection(
             mapOf("param" to "view")
         )
 
-        // Start frame loop using coroutine scope
-        val scope = CoroutineScope(Dispatchers.IO)
-        liveViewJob = scope.launch {
+        // Bug fix: Cancel any existing scope before creating new one to prevent memory leaks
+        liveViewScope?.cancel()
+        liveViewScope = CoroutineScope(Dispatchers.IO + Job())
+
+        liveViewJob = liveViewScope!!.launch {
+            var previousBitmap: Bitmap? = null
             while (isActive && _connectionState.value == ConnectionState.CONNECTED) {
                 try {
                     val jpegData = protocol?.receiveJpegFrame()
@@ -266,6 +272,9 @@ class CameraConnection(
                         val bitmap = BitmapFactory.decodeByteArray(
                             jpegData, 0, jpegData.size
                         )
+                        // Bug fix: Recycle previous bitmap to prevent memory accumulation
+                        previousBitmap?.recycle()
+                        previousBitmap = _liveViewFrame.value
                         _liveViewFrame.value = bitmap
                         onFrame(bitmap)
                     }
@@ -284,6 +293,11 @@ class CameraConnection(
     fun stopLiveView() {
         liveViewJob?.cancel()
         liveViewJob = null
+        // Bug fix: Cancel the scope to ensure all coroutines are cleaned up
+        liveViewScope?.cancel()
+        liveViewScope = null
+        // Recycle bitmap to free memory
+        _liveViewFrame.value?.recycle()
         _liveViewFrame.value = null
     }
 

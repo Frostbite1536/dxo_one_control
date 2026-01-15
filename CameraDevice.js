@@ -158,7 +158,8 @@ export class CameraDevice {
      */
     async _getRX(byteLength = 32) {
         // INV-DATA-003: Check connection before operation
-        if (!this.isConnected && this.isInitialized) {
+        // Bug fix: Simplified condition - if not connected, throw error regardless of initialization state
+        if (!this.isConnected) {
             throw new Error('Camera disconnected');
         }
         return this.device.transferIn(this.inEndpoint, byteLength)
@@ -181,7 +182,8 @@ export class CameraDevice {
         let jpgResponse = new Uint8Array(metadata.length);
 
         let offset = 0;
-        if (jpgResponse.indexOfMulti(JPG_METADATA_HEADER) >= 0) {
+        // Bug fix: Check metadata instead of empty jpgResponse array
+        if (metadata.indexOfMulti(JPG_METADATA_HEADER) >= 0) {
             offset = metadata.length - 32;
             jpgResponse.set(metadata.slice(32));
         } else {

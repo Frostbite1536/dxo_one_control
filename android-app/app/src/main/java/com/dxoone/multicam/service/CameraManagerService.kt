@@ -174,16 +174,26 @@ class CameraManagerService : Service() {
 
     /**
      * Apply a setting to all cameras.
+     * Bug fix: Use async/await instead of fire-and-forget launch to properly track results.
      */
     suspend fun applySettingToAll(settingType: String, value: String): Boolean {
         val cameras = getConnectedCameras()
-        val results = cameras.map { camera ->
-            serviceScope.launch(Dispatchers.IO) {
-                camera.setSetting(settingType, value)
+        if (cameras.isEmpty()) return true
+
+        return kotlinx.coroutines.withContext(Dispatchers.IO) {
+            val results = cameras.map { camera ->
+                kotlinx.coroutines.async {
+                    try {
+                        camera.setSetting(settingType, value)
+                    } catch (e: Exception) {
+                        false
+                    }
+                }
             }
+            // Wait for all operations and count successes
+            val successCount = results.map { it.await() }.count { it }
+            successCount > 0
         }
-        // Simplified - in production would collect actual results
-        return true
     }
 
     private fun createNotificationChannel() {
@@ -197,8 +207,9 @@ class CameraManagerService : Service() {
                 setShowBadge(false)
             }
 
+            // Bug fix: Add null check for getSystemService result
             val notificationManager = getSystemService(NotificationManager::class.java)
-            notificationManager.createNotificationChannel(channel)
+            notificationManager?.createNotificationChannel(channel)
         }
     }
 
@@ -236,7 +247,8 @@ class CameraManagerService : Service() {
 
     private fun updateNotification(result: MultiCaptureResult? = null) {
         val notification = createNotification(result)
+        // Bug fix: Add null check for getSystemService result
         val notificationManager = getSystemService(NotificationManager::class.java)
-        notificationManager.notify(NOTIFICATION_ID, notification)
+        notificationManager?.notify(NOTIFICATION_ID, notification)
     }
 }

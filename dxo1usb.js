@@ -90,7 +90,8 @@ async function open(usbBackend = navigator.usb) {
         let jpgResponse = new Uint8Array(metadata.length);
 
         let offset = 0;
-        if (jpgResponse.indexOfMulti(JPG_METADATA_HEADER) >= 0) {
+        // Bug fix: Check metadata instead of empty jpgResponse array
+        if (metadata.indexOfMulti(JPG_METADATA_HEADER) >= 0) {
             offset = metadata.length - 32;
             jpgResponse.set(metadata.slice(32));
         } else {
@@ -214,7 +215,8 @@ async function open(usbBackend = navigator.usb) {
         const immediateResponse = await transferOutRPC('dxo_setting_set', params);
         if (immediateResponse.method === 'dxo_setting_applied') {
             const response = await transferInRPC();
-            const hasSucceeded = result.id === commandSeq && response.result.type === params.type;
+            // Bug fix: was using undefined 'result' variable, should be 'response'
+            const hasSucceeded = response && response.id === commandSeq && response.result && response.result.type === params.type;
 
             return hasSucceeded;
         }
@@ -240,9 +242,13 @@ async function open(usbBackend = navigator.usb) {
             }
 
             let foundHeaderIndex = lastJPEGFrame.indexOfMulti(JPG_HEADER);
-            let foundTrailerIndex = lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1);
+            // Bug fix: Only search for trailer if header was found (avoid invalid offset -1+1=0)
+            let foundTrailerIndex = foundHeaderIndex >= 0
+                ? lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1)
+                : -1;
 
-            if (foundHeaderIndex > 0 && foundTrailerIndex > 0) {
+            // Bug fix: Use >= 0 instead of > 0 (header at index 0 is valid)
+            if (foundHeaderIndex >= 0 && foundTrailerIndex >= 0) {
                 lastJPEGFrame = lastJPEGFrame.slice(foundHeaderIndex, foundTrailerIndex + 2);
                 let blob = new Blob([lastJPEGFrame], { 'type': 'image/jpeg' });
                 let url = URL.createObjectURL(blob);
@@ -263,9 +269,13 @@ async function open(usbBackend = navigator.usb) {
                 }
 
                 foundHeaderIndex = lastJPEGFrame.indexOfMulti(JPG_HEADER);
-                foundTrailerIndex = lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1);
+                // Bug fix: Only search for trailer if header was found
+                foundTrailerIndex = foundHeaderIndex >= 0
+                    ? lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1)
+                    : -1;
 
-                if (foundHeaderIndex > 0 && foundTrailerIndex > 0) {
+                // Bug fix: Use >= 0 instead of > 0 (header at index 0 is valid)
+                if (foundHeaderIndex >= 0 && foundTrailerIndex >= 0) {
                     lastJPEGFrame = lastJPEGFrame.slice(foundHeaderIndex, foundTrailerIndex + 2);
                     let blob = new Blob([lastJPEGFrame], { 'type': 'image/jpeg' });
                     let url = URL.createObjectURL(blob);
@@ -418,7 +428,7 @@ async function open(usbBackend = navigator.usb) {
                     sport: bindApplySetting({ "type": "shooting_mode", "param": "sport" }),
                     portrait: bindApplySetting({ "type": "shooting_mode", "param": "portrait" }),
                     landscape: bindApplySetting({ "type": "shooting_mode", "param": "landscape" }),
-                    night: bindApplySetting({ "type": "shooting_mode", "param": " night" }),
+                    night: bindApplySetting({ "type": "shooting_mode", "param": "night" }),
 
                     // Priority shooting modes
                     program: bindApplySetting({ "type": "shooting_mode", "param": "program" }),

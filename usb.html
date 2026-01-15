@@ -1,10 +1,20 @@
-<html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>DXO One Web Interface</title>
+</head>
 <script type="module">
     import DXOONE from './dxo1usb.js';
 
     const $ = q => document.querySelector(q);
 
-    const log = msg => $('#msg').innerHTML = msg;
+    // Bug fix: Use textContent for plain text to prevent XSS
+    const log = msg => {
+        const el = $('#msg');
+        if (el) el.textContent = msg;
+    };
     const logJSON = obj => log(JSON.stringify(obj, null, 2));
 
     const dxo1 = {};
@@ -76,7 +86,7 @@
     <button onclick="window.toggleConnection()" id="btnConnect">Connect</button>
     <button onclick="window.toggleLiveView()" id="btnLiveView" disabled>Start live view</button>
     <button onclick="window.takePhoto()" id="btnSnap" disabled>Take a photo</button>
-    <img id="liveview">
+    <img id="liveview" alt="Live View">
     <div id="msg"></div>
 </body>
 

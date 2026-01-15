@@ -14,48 +14,40 @@
 ## High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────────────┐
-│                              dxo1control                                 │
-├─────────────────────────────────┬───────────────────────────────────────┤
-│        USB Control Layer        │       Post-Processing Layer           │
-│                                 │                                       │
-│  ┌───────────────────────────┐ │   ┌────────────────┐                  │
-│  │      CameraManager        │ │   │ resizeDNG.mjs  │                  │
-│  │  (Multi-Camera Support)   │ │   │                │                  │
-│  │  - Up to 4 cameras        │ │   │ - DNG Reader   │                  │
-│  │  - Synchronized capture   │ │   │ - Image Resize │                  │
-│  │  - Parallel operations    │ │   │ - JPG Export   │                  │
-│  └───────────┬───────────────┘ │   └────────────────┘                  │
-│              │                  │          │                            │
-│  ┌───────────▼───────────────┐ │          ▼                            │
-│  │      CameraDevice         │ │   ┌────────────────┐                  │
-│  │  (Per-Camera State)       │ │   │  File System   │                  │
-│  │  - Connection state       │ │   │                │                  │
-│  │  - Live view              │ │   └────────────────┘                  │
-│  │  - Settings cache         │ │                                       │
-│  └───────────┬───────────────┘ │                                       │
-│              │                  │                                       │
-│  ┌───────────▼───────────────┐ │                                       │
-│  │       dxo1usb.js          │ │                                       │
-│  │  (Legacy Single-Camera)   │ │                                       │
-│  │  - WebUSB API             │ │                                       │
-│  │  - Camera Commands        │ │                                       │
-│  │  - u8a utils              │ │                                       │
-│  └───────────────────────────┘ │                                       │
-│              │                  │                                       │
-│              ▼                  │                                       │
-│  ┌───────────────────────────┐ │                                       │
-│  │   usb.html (Single)       │ │                                       │
-│  │   multi-camera.html       │ │                                       │
-│  │   (Demo/UI)               │ │                                       │
-│  └───────────────────────────┘ │                                       │
-└─────────────────────────────────┴───────────────────────────────────────┘
-              │
-              ▼
-  ┌─────────────────────────────┐
-  │  DXO One Cameras (1-4)      │
-  │  (microUSB connection)      │
-  └─────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                                  dxo1control                                      │
+├───────────────────────┬───────────────────────┬──────────────────────────────────┤
+│   Web USB Control     │    Android App        │      Post-Processing             │
+│                       │                       │                                  │
+│  ┌─────────────────┐ │  ┌─────────────────┐ │   ┌────────────────┐              │
+│  │  CameraManager  │ │  │  MainActivity   │ │   │ resizeDNG.mjs  │              │
+│  │  (Multi-Camera) │ │  │  (Compose UI)   │ │   │                │              │
+│  │  - 4 cameras    │ │  └────────┬────────┘ │   │ - DNG Reader   │              │
+│  │  - Sync capture │ │           │          │   │ - Image Resize │              │
+│  └───────┬─────────┘ │  ┌────────▼────────┐ │   │ - JPG Export   │              │
+│          │           │  │  ViewModel      │ │   └────────────────┘              │
+│  ┌───────▼─────────┐ │  │  (State Mgmt)   │ │                                   │
+│  │  CameraDevice   │ │  └────────┬────────┘ │                                   │
+│  │  (Per-Camera)   │ │           │          │                                   │
+│  └───────┬─────────┘ │  ┌────────▼────────┐ │                                   │
+│          │           │  │  CameraManager  │ │                                   │
+│  ┌───────▼─────────┐ │  │  Service        │ │                                   │
+│  │   dxo1usb.js    │ │  └────────┬────────┘ │                                   │
+│  │   (WebUSB API)  │ │           │          │                                   │
+│  └───────┬─────────┘ │  ┌────────▼────────┐ │                                   │
+│          │           │  │ DxoOneProtocol  │ │                                   │
+│  ┌───────▼─────────┐ │  │ (USB Protocol)  │ │                                   │
+│  │ usb.html        │ │  └─────────────────┘ │                                   │
+│  │ multi-cam.html  │ │                      │                                   │
+│  └─────────────────┘ │                      │                                   │
+└───────────────────────┴───────────────────────┴──────────────────────────────────┘
+              │                      │
+              └──────────┬───────────┘
+                         ▼
+            ┌─────────────────────────────┐
+            │  DXO One Cameras (1-4)      │
+            │  (microUSB connection)      │
+            └─────────────────────────────┘
 ```
 
 ## Component Breakdown
@@ -141,7 +133,51 @@
 - `CameraManager.js` (multi-camera mode)
 - WebUSB-compatible browser
 
-### 5. Post-Processing Tool (`resizeDNG.mjs`)
+### 5. Android Application (`android-app/`)
+
+**Responsibilities:**
+- Native Android app for controlling DXO One cameras
+- USB Host (OTG) support for direct camera connection
+- Multi-camera management with foreground service
+- Material Design 3 UI with Jetpack Compose
+
+**Architecture:** Clean Architecture + MVVM
+
+```
+com.dxoone.multicam/
+├── di/                    (Hilt dependency injection)
+├── data/                  (Data layer, repositories, database)
+├── domain/                (Business logic, models, use cases)
+├── usb/                   (USB protocol implementation)
+│   ├── DxoOneConstants    (Protocol constants, vendor ID: 0x2B8F)
+│   ├── DxoOneUsbProtocol  (USB communication)
+│   ├── CameraConnection   (Camera wrapper)
+│   └── UsbDeviceManager   (Device discovery)
+├── service/               (Background services)
+│   ├── CameraManagerService  (Foreground service)
+│   └── SyncCaptureEngine     (Synchronized capture)
+└── ui/                    (Presentation layer, Compose)
+    ├── MainActivity
+    ├── theme/Theme
+    ├── screens/           (MainScreen, SettingsScreen)
+    └── viewmodel/         (MultiCameraViewModel, SettingsViewModel)
+```
+
+**Key Features:**
+- USB Host mode for camera connection without computer
+- Foreground service maintains connections when app backgrounded
+- Settings persistence via DataStore
+- Same JSON-RPC protocol as WebUSB implementation
+- Supports parallel and sequential capture modes
+
+**Dependencies:**
+- Jetpack Compose (UI framework)
+- Hilt (dependency injection)
+- Room + DataStore (persistence)
+- Kotlin Coroutines (async operations)
+- Android USB Host API
+
+### 6. Post-Processing Tool (`resizeDNG.mjs`)
 
 **Responsibilities:**
 - Read DNG (Digital Negative) files from DXO One
@@ -311,6 +347,6 @@
 
 ---
 
-**Last Updated**: 2026-01-04
-**Document Version**: 1.1
-**Status**: Multi-camera support added
+**Last Updated**: 2026-01-15
+**Document Version**: 1.2
+**Status**: Android app and CI/CD improvements added

@@ -580,6 +580,6 @@ async captureAll() {
 
 ---
 
-**Last Updated**: 2026-01-04
-**Document Version**: 1.1
+**Last Updated**: 2026-01-15
+**Document Version**: 1.2
 **Total Invariants**: 15 (11 core + 4 multi-camera)

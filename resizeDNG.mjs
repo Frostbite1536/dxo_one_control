@@ -1,5 +1,6 @@
 import fs from 'fs';
-import { execSync } from 'child_process';
+import path from 'path';
+import { spawnSync } from 'child_process';
 
 const [_NODEBIN, _SCRIPT, dngPath] = process.argv;
 
@@ -13,8 +14,8 @@ Onboard DXO One firmware alters this colorspace during conversion from DNG to JP
 `.trim();
 
 const FACTOR = 0.25;
-const RESIZED_H = 3688 * FACTOR;
-const RESIZED_W = 5540 * FACTOR;
+const RESIZED_H = Math.round(3688 * FACTOR);
+const RESIZED_W = Math.round(5540 * FACTOR);
 const RESIZED_DIR = 'resized';
 
 function batchResize() {
@@ -23,18 +24,41 @@ function batchResize() {
         return;
     }
 
-    const files = fs.readdirSync(dngPath);
-    fs.mkdirSync(RESIZED_DIR, { recursive: true });
-
-    try {
-        for (let f of files) {
-            if (f.indexOf('.DNG') === -1) continue;
-
-            execSync(`sips -s format jpeg ${dngPath}/${f} --resampleHeightWidth ${RESIZED_H} ${RESIZED_W} --out ${dngPath}/${RESIZED_DIR}/${f.replace('.DNG', '.jpg')}`);
-        }
-    } catch (e) {
-        console.error(e.stderr.toString('utf8'));
+    // Validate path exists and is a directory
+    if (!fs.existsSync(dngPath) || !fs.statSync(dngPath).isDirectory()) {
+        console.error(`Error: "${dngPath}" is not a valid directory`);
+        return;
     }
+
+    const files = fs.readdirSync(dngPath);
+    const outputDir = path.join(dngPath, RESIZED_DIR);
+    fs.mkdirSync(outputDir, { recursive: true });
+
+    let processedCount = 0;
+
+    for (const f of files) {
+        if (!f.endsWith('.DNG')) continue;
+
+        const inputFile = path.join(dngPath, f);
+        const outputFile = path.join(outputDir, f.replace('.DNG', '.jpg'));
+
+        // Bug fix: Use spawnSync with array arguments to prevent command injection
+        const result = spawnSync('sips', [
+            '-s', 'format', 'jpeg',
+            inputFile,
+            '--resampleHeightWidth', String(RESIZED_H), String(RESIZED_W),
+            '--out', outputFile
+        ], { encoding: 'utf8' });
+
+        if (result.status !== 0) {
+            console.error(`Error processing ${f}: ${result.stderr}`);
+        } else {
+            processedCount++;
+            console.log(`Processed: ${f}`);
+        }
+    }
+
+    console.log(`\nCompleted: ${processedCount} files processed`);
 }
 
 batchResize();

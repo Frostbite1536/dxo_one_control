@@ -22,7 +22,8 @@ This roadmap outlines the planned development phases for dxo1control. The projec
 - [x] **prompts/engineering.md** - Customized coding guidelines
 - [x] **Multi-camera support** - CameraManager, CameraDevice (early delivery from Phase 4)
 - [x] **Multi-camera UI** - multi-camera.html interface
-- [ ] **CI/CD Pipeline** - Automated testing and validation
+- [x] **Android App** - Native Android multi-camera application
+- [x] **CI/CD Pipeline** - Automated testing and Android build validation
 - [ ] **API Documentation** - JSDoc comments and generated docs
 - [ ] **Usage Examples** - Code samples and tutorials
 
@@ -479,8 +480,9 @@ t usb net                        # Enable USB networking mode
 
 ---
 
-**Last Updated**: 2026-01-04
-**Document Version**: 1.2
+**Last Updated**: 2026-01-15
+**Document Version**: 1.3
 **Current Phase**: Phase 1 (Foundation & Documentation)
-**Early Deliveries**: Multi-camera support (from Phase 4)
+**Early Deliveries**: Multi-camera support (from Phase 4), Android app
 **New Research**: Community discoveries integrated
+**CI/CD**: Android build validation added to pipeline
