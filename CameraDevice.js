@@ -162,8 +162,10 @@ export class CameraDevice {
         if (!this.isConnected) {
             throw new Error('Camera disconnected');
         }
+        // Bug fix: Use res.data directly instead of res.data.buffer to avoid
+        // reading unrelated data if DataView has non-zero byte offset
         return this.device.transferIn(this.inEndpoint, byteLength)
-            .then(res => new Uint8Array(res.data.buffer));
+            .then(res => new Uint8Array(res.data.buffer, res.data.byteOffset, res.data.byteLength));
     }
 
     /**
@@ -342,45 +344,43 @@ export class CameraDevice {
         this.shouldStopLiveView = false;
         this.isLiveViewActive = true;
 
-        await this.transferOutRPC('dxo_camera_mode_switch', { "param": 'view' });
+        // Bug fix: Add timeout protection and error handling
+        const LIVEVIEW_TIMEOUT_MS = 60000; // 60 second timeout
+        const startTime = Date.now();
+        let consecutiveErrors = 0;
+        const MAX_CONSECUTIVE_ERRORS = 10;
 
-        do {
-            if (this.shouldStopLiveView) break;
+        try {
+            await this.transferOutRPC('dxo_camera_mode_switch', { "param": 'view' });
 
-            let frame = await this.transferInJPEG() || new Uint8Array(0);
-            if (!frame || frame.length === 0) continue;
+            do {
+                if (this.shouldStopLiveView) break;
 
-            let foundHeaderIndex = this.lastJPEGFrame.indexOfMulti(JPG_HEADER);
-            // Only search for trailer if header was found (Bug fix: invalid offset)
-            let foundTrailerIndex = foundHeaderIndex >= 0
-                ? this.lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1)
-                : -1;
-
-            // Bug fix: >= 0 instead of > 0 (header at index 0 is valid)
-            if (foundHeaderIndex >= 0 && foundTrailerIndex >= 0) {
-                this.lastJPEGFrame = this.lastJPEGFrame.slice(foundHeaderIndex, foundTrailerIndex + 2);
-                let blob = new Blob([this.lastJPEGFrame], { 'type': 'image/jpeg' });
-                let url = URL.createObjectURL(blob);
-                this.lastJPEGFrame = new Uint8Array(0);
-                // Bug fix: Pass URL revocation callback to prevent memory leak
-                callback(url, () => URL.revokeObjectURL(url));
-            } else {
-                let accumulatedJPEGFrame = this.lastJPEGFrame.slice();
-                const lastLength = this.lastJPEGFrame.length;
-
-                if (foundHeaderIndex > 0) {
-                    this.lastJPEGFrame = new Uint8Array(lastLength - foundHeaderIndex + frame.length);
-                    this.lastJPEGFrame.set(accumulatedJPEGFrame);
-                    this.lastJPEGFrame.set(frame, lastLength - foundHeaderIndex);
-                } else {
-                    this.lastJPEGFrame = new Uint8Array(lastLength + frame.length);
-                    this.lastJPEGFrame.set(accumulatedJPEGFrame);
-                    this.lastJPEGFrame.set(frame, lastLength);
+                // Bug fix: Add timeout check to prevent infinite loops
+                if (Date.now() - startTime > LIVEVIEW_TIMEOUT_MS) {
+                    console.warn(`[${this.displayName}] Live view timeout reached`);
+                    break;
                 }
 
-                foundHeaderIndex = this.lastJPEGFrame.indexOfMulti(JPG_HEADER);
+                let frame;
+                try {
+                    frame = await this.transferInJPEG() || new Uint8Array(0);
+                    consecutiveErrors = 0; // Reset on success
+                } catch (error) {
+                    consecutiveErrors++;
+                    console.error(`[${this.displayName}] Live view frame error:`, error);
+                    if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                        console.error(`[${this.displayName}] Too many consecutive errors, stopping live view`);
+                        break;
+                    }
+                    continue;
+                }
+
+                if (!frame || frame.length === 0) continue;
+
+                let foundHeaderIndex = this.lastJPEGFrame.indexOfMulti(JPG_HEADER);
                 // Only search for trailer if header was found (Bug fix: invalid offset)
-                foundTrailerIndex = foundHeaderIndex >= 0
+                let foundTrailerIndex = foundHeaderIndex >= 0
                     ? this.lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1)
                     : -1;
 
@@ -392,11 +392,44 @@ export class CameraDevice {
                     this.lastJPEGFrame = new Uint8Array(0);
                     // Bug fix: Pass URL revocation callback to prevent memory leak
                     callback(url, () => URL.revokeObjectURL(url));
-                }
-            }
-        } while (1);
+                } else {
+                    let accumulatedJPEGFrame = this.lastJPEGFrame.slice();
+                    const lastLength = this.lastJPEGFrame.length;
 
-        this.isLiveViewActive = false;
+                    if (foundHeaderIndex > 0) {
+                        this.lastJPEGFrame = new Uint8Array(lastLength - foundHeaderIndex + frame.length);
+                        this.lastJPEGFrame.set(accumulatedJPEGFrame);
+                        this.lastJPEGFrame.set(frame, lastLength - foundHeaderIndex);
+                    } else {
+                        this.lastJPEGFrame = new Uint8Array(lastLength + frame.length);
+                        this.lastJPEGFrame.set(accumulatedJPEGFrame);
+                        this.lastJPEGFrame.set(frame, lastLength);
+                    }
+
+                    foundHeaderIndex = this.lastJPEGFrame.indexOfMulti(JPG_HEADER);
+                    // Only search for trailer if header was found (Bug fix: invalid offset)
+                    foundTrailerIndex = foundHeaderIndex >= 0
+                        ? this.lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1)
+                        : -1;
+
+                    // Bug fix: >= 0 instead of > 0 (header at index 0 is valid)
+                    if (foundHeaderIndex >= 0 && foundTrailerIndex >= 0) {
+                        this.lastJPEGFrame = this.lastJPEGFrame.slice(foundHeaderIndex, foundTrailerIndex + 2);
+                        let blob = new Blob([this.lastJPEGFrame], { 'type': 'image/jpeg' });
+                        let url = URL.createObjectURL(blob);
+                        this.lastJPEGFrame = new Uint8Array(0);
+                        // Bug fix: Pass URL revocation callback to prevent memory leak
+                        callback(url, () => URL.revokeObjectURL(url));
+                    }
+                }
+            } while (1);
+        } catch (error) {
+            console.error(`[${this.displayName}] Live view error:`, error);
+            this.lastError = error;
+            throw error;
+        } finally {
+            this.isLiveViewActive = false;
+        }
     }
 
     /**

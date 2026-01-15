@@ -272,8 +272,15 @@ class MultiCameraViewModel @Inject constructor(
 
     private fun preFocusAll() {
         viewModelScope.launch {
-            usbDeviceManager.connectedCameras.value.values.forEach { camera ->
-                camera.focus(128, 128)
+            // Bug fix: Use async/awaitAll for proper suspend function handling
+            try {
+                usbDeviceManager.connectedCameras.value.values.map { camera ->
+                    async { camera.focus(128, 128) }
+                }.awaitAll()
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(error = "Focus failed: ${e.message}")
+                }
             }
         }
     }

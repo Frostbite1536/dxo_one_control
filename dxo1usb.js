@@ -213,7 +213,8 @@ async function open(usbBackend = navigator.usb) {
         }
 
         const immediateResponse = await transferOutRPC('dxo_setting_set', params);
-        if (immediateResponse.method === 'dxo_setting_applied') {
+        // Bug fix: Add null check to prevent "Cannot read property 'method' of null"
+        if (immediateResponse?.method === 'dxo_setting_applied') {
             const response = await transferInRPC();
             // Bug fix: was using undefined 'result' variable, should be 'response'
             const hasSucceeded = response && response.id === commandSeq && response.result && response.result.type === params.type;
@@ -230,14 +231,38 @@ async function open(usbBackend = navigator.usb) {
     async function startLiveView(callback) {
         shouldStopLiveView = false;
         await transferOutRPC('dxo_camera_mode_switch', { "param": 'view' });
-        do {
 
+        // Bug fix: Add timeout protection and error handling to prevent infinite loops
+        const LIVEVIEW_TIMEOUT_MS = 60000; // 60 second timeout for entire session
+        const startTime = Date.now();
+        let consecutiveErrors = 0;
+        const MAX_CONSECUTIVE_ERRORS = 10;
+
+        do {
             if (shouldStopLiveView) break;
 
-            let frame = await transferInJPEG() || new Uint8Array(0);
+            // Bug fix: Add timeout check
+            if (Date.now() - startTime > LIVEVIEW_TIMEOUT_MS) {
+                console.warn('Live view timeout reached');
+                break;
+            }
+
+            let frame;
+            try {
+                frame = await transferInJPEG() || new Uint8Array(0);
+                consecutiveErrors = 0; // Reset on success
+            } catch (error) {
+                consecutiveErrors++;
+                console.error('Live view frame error:', error);
+                if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+                    console.error('Too many consecutive errors, stopping live view');
+                    break;
+                }
+                continue;
+            }
+
             // Need 1 more condition to stop empty frames from getting through
             if (!frame || frame.length === 0) {
-                // console.log(frame);
                 continue;
             }
 
@@ -253,7 +278,8 @@ async function open(usbBackend = navigator.usb) {
                 let blob = new Blob([lastJPEGFrame], { 'type': 'image/jpeg' });
                 let url = URL.createObjectURL(blob);
                 lastJPEGFrame = new Uint8Array(0);
-                callback(url);
+                // Bug fix: Provide URL revocation callback to prevent memory leaks
+                callback(url, () => URL.revokeObjectURL(url));
             } else {
                 let accumulatedJPEGFrame = lastJPEGFrame.slice();
                 const lastLength = lastJPEGFrame.length;
@@ -280,7 +306,8 @@ async function open(usbBackend = navigator.usb) {
                     let blob = new Blob([lastJPEGFrame], { 'type': 'image/jpeg' });
                     let url = URL.createObjectURL(blob);
                     lastJPEGFrame = new Uint8Array(0);
-                    callback(url);
+                    // Bug fix: Provide URL revocation callback to prevent memory leaks
+                    callback(url, () => URL.revokeObjectURL(url));
                 }
             }
         } while (1);

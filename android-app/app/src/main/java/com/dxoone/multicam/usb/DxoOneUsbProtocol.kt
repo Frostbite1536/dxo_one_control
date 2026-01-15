@@ -141,6 +141,11 @@ class DxoOneUsbProtocol(
         while (offset < responseSize) {
             val payload = transferIn(DxoOneConstants.MAX_PACKET_SIZE)
 
+            // Bug fix: Break on empty payload to prevent infinite loop
+            if (payload.isEmpty()) {
+                break
+            }
+
             if (payload.contentEquals(DxoOneConstants.METADATA_INIT_SIGNATURE)) {
                 transferOut(DxoOneConstants.METADATA_INIT_RESPONSE_SIGNATURE)
                 break
@@ -148,7 +153,8 @@ class DxoOneUsbProtocol(
 
             val copySize = minOf(payload.size, responseSize - offset)
             System.arraycopy(payload, 0, responseBuffer, offset, copySize)
-            offset += payload.size
+            // Bug fix: Use copySize instead of payload.size to prevent offset exceeding responseSize
+            offset += copySize
         }
 
         // Parse JSON response

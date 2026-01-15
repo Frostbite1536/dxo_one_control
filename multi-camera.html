@@ -147,7 +147,7 @@
             log(`Connected: ${camera.displayName}`);
             selectCamera(camera.id);
         } catch (error) {
-            log(`<div class="error">Connection failed: ${escapeHtml(error.message)}</div>`);
+            log(`<div class="error">Connection failed: ${escapeHtml(error.message)}</div>`, true);
         }
     };
 
@@ -160,7 +160,7 @@
             selectedCameraId = null;
             log('Camera disconnected');
         } catch (error) {
-            log(`<div class="error">Disconnect failed: ${escapeHtml(error.message)}</div>`);
+            log(`<div class="error">Disconnect failed: ${escapeHtml(error.message)}</div>`, true);
         }
     };
 
@@ -174,7 +174,7 @@
             selectedCameraId = null;
             log('All cameras disconnected');
         } catch (error) {
-            log(`<div class="error">Failed: ${escapeHtml(error.message)}</div>`);
+            log(`<div class="error">Failed: ${escapeHtml(error.message)}</div>`, true);
         }
     };
 
@@ -187,7 +187,7 @@
             await manager.captureAll();
             // Results shown via onCaptureComplete callback
         } catch (error) {
-            log(`<div class="error">Capture failed: ${escapeHtml(error.message)}</div>`);
+            log(`<div class="error">Capture failed: ${escapeHtml(error.message)}</div>`, true);
         }
     };
 
@@ -203,7 +203,7 @@
             await camera.takePhoto();
             log(`Photo taken on ${camera.displayName}!`);
         } catch (error) {
-            log(`<div class="error">Photo failed: ${escapeHtml(error.message)}</div>`);
+            log(`<div class="error">Photo failed: ${escapeHtml(error.message)}</div>`, true);
         }
     };
 
@@ -266,9 +266,18 @@
 
     /**
      * Logs a message to the output area
+     * Bug fix: Use textContent for plain text to prevent XSS; only use innerHTML for explicit HTML
+     * @param {string} msg - Message to log
+     * @param {boolean} isHtml - If true, msg contains HTML and will use innerHTML
      */
-    function log(msg) {
-        $('#msg').innerHTML = msg;
+    function log(msg, isHtml = false) {
+        const el = $('#msg');
+        if (!el) return;
+        if (isHtml) {
+            el.innerHTML = msg;
+        } else {
+            el.textContent = msg;
+        }
     }
 
     /**
