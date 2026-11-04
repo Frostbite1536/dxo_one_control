@@ -46,8 +46,12 @@ class CameraConnection(
     val id: String = device.serialNumber ?: UUID.randomUUID().toString()
     val serialNumber: String? = device.serialNumber
 
-    // User-assignable nickname
-    var nickname: String? = null
+    // User-assignable nickname (observable so renames reach the UI)
+    private val _nickname = MutableStateFlow<String?>(null)
+    val nicknameFlow: StateFlow<String?> = _nickname.asStateFlow()
+    var nickname: String?
+        get() = _nickname.value
+        set(value) { _nickname.value = value }
 
     // Display name for UI
     val displayName: String
@@ -434,6 +438,10 @@ class CameraConnection(
             }
         }
     }
+
+    /** True while a live-view session is running. */
+    val isLiveViewActive: Boolean
+        get() = liveViewSession?.isActive == true
 
     /**
      * Stop live view streaming.

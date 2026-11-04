@@ -4,8 +4,10 @@ import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.dxoone.multicam.data.SettingsPreferences
 import com.dxoone.multicam.domain.model.*
+import com.dxoone.multicam.service.CameraSettingsApplier
 import com.dxoone.multicam.usb.UsbDeviceManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -131,63 +133,23 @@ class SettingsViewModel @Inject constructor(
 
                 var successCount = 0
                 var failCount = 0
+                val failedTypes = mutableSetOf<String>()
 
                 for (camera in cameras) {
                     try {
-                        // Apply image format (RAW + TNR)
-                        camera.setSetting("raw", settings.imageFormat.rawParam)
-                        camera.setSetting("tnr", settings.imageFormat.tnrParam)
+                        val result = CameraSettingsApplier.apply(camera, settings)
+                        if (result.succeeded) successCount++ else failCount++
+                        failedTypes += result.failedSettings
 
-                        // Apply shooting mode
-                        camera.setSetting("shooting_mode", settings.shootingMode.param)
-
-                        // Apply ISO (only if not auto in program mode)
-                        if (settings.iso != IsoSetting.AUTO) {
-                            camera.setSetting("iso", settings.iso.param)
-                        }
-
-                        // Apply aperture (for aperture priority or manual)
-                        if (settings.shootingMode == ShootingMode.APERTURE_PRIORITY ||
-                            settings.shootingMode == ShootingMode.MANUAL) {
-                            camera.setSetting("aperture", settings.aperture.param)
-                        }
-
-                        // Apply exposure time (for shutter priority or manual)
-                        if (settings.shootingMode == ShootingMode.SHUTTER_PRIORITY ||
-                            settings.shootingMode == ShootingMode.MANUAL) {
-                            if (settings.exposureTime != ExposureTimeSetting.AUTO) {
-                                camera.setSetting("exposure_time", settings.exposureTime.param)
-                            }
-                        }
-
-                        // Apply EV bias
-                        camera.setSetting("ev_bias", settings.evBias.param)
-
-                        // Apply focus mode
-                        camera.setSetting("still_focusing_mode", settings.focusMode.param)
-
-                        // Apply AF mode
-                        if (settings.focusMode == FocusMode.AUTO_FOCUS) {
-                            camera.setSetting("af_mode", settings.afMode.param)
-                        }
-
-                        // Apply white balance intensity
-                        camera.setSetting("lighting_intensity", settings.whiteBalanceIntensity.param)
-
-                        // Apply JPEG quality
-                        camera.setSetting("photo_quality", settings.jpegQuality.param)
-
-                        // Apply self-timer
-                        camera.setSetting("selftimer", settings.selfTimer.param)
-
-                        // Start/stop live view based on setting
+                        // Start/stop live view based on setting. Frames reach the UI through
+                        // camera.liveViewFrame; don't start a second session if one is running.
                         if (settings.liveViewEnabled) {
-                            camera.startLiveView { /* Frame callback handled by ViewModel */ }
+                            if (!camera.isLiveViewActive) camera.startLiveView { }
                         } else {
                             camera.stopLiveView()
                         }
-
-                        successCount++
+                    } catch (e: CancellationException) {
+                        throw e
                     } catch (e: Exception) {
                         failCount++
                     }
@@ -198,10 +160,13 @@ class SettingsViewModel @Inject constructor(
                     settingsPreferences.saveSettings(settings)
                 }
 
+                val failedDetail = if (failedTypes.isNotEmpty()) {
+                    " (not confirmed: ${failedTypes.sorted().joinToString()})"
+                } else ""
                 val message = when {
                     failCount == 0 -> "Settings applied to $successCount camera(s)"
-                    successCount == 0 -> "Failed to apply settings"
-                    else -> "Applied to $successCount, failed on $failCount camera(s)"
+                    successCount == 0 -> "Failed to apply settings$failedDetail"
+                    else -> "Applied to $successCount, failed on $failCount camera(s)$failedDetail"
                 }
 
                 _uiState.update {
@@ -228,6 +193,9 @@ class SettingsViewModel @Inject constructor(
         }
         viewModelScope.launch {
             settingsPreferences.resetToDefaults()
+            // Resetting also clears the stored "apply to all" flag; keep the UI in sync.
+            val applyToAll = settingsPreferences.applyToAllFlow.first()
+            _uiState.update { it.copy(applyToAllCameras = applyToAll) }
         }
     }
 }

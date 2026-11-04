@@ -13,6 +13,10 @@ import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -43,6 +47,12 @@ class UsbDeviceManager @Inject constructor(
     val connectedCameras: StateFlow<Map<String, CameraConnection>> = _connectedCameras.asStateFlow()
 
     private val pendingPermissionCallbacks = mutableMapOf<String, (Boolean) -> Unit>()
+
+    /** Guards receiver registration so [initialize] is idempotent. */
+    private val initialized = AtomicBoolean(false)
+
+    /** Serializes connects so the camera limit and duplicate checks can't race. */
+    private val connectMutex = Mutex()
 
     companion object {
         private const val TAG = "UsbDeviceManager"
@@ -93,8 +103,16 @@ class UsbDeviceManager @Inject constructor(
 
     /**
      * Initialize the USB device manager and register receivers.
+     *
+     * Idempotent: called once per process from [com.dxoone.multicam.DxoOneMultiCamApp];
+     * later calls only refresh the device list.
      */
     fun initialize() {
+        if (!initialized.compareAndSet(false, true)) {
+            refreshDevices()
+            return
+        }
+
         val filter = IntentFilter().apply {
             addAction(ACTION_USB_PERMISSION)
             addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
@@ -115,10 +133,12 @@ class UsbDeviceManager @Inject constructor(
      * Clean up resources.
      */
     fun cleanup() {
-        try {
-            context.unregisterReceiver(usbReceiver)
-        } catch (e: Exception) {
-            // Receiver may not be registered
+        if (initialized.compareAndSet(true, false)) {
+            try {
+                context.unregisterReceiver(usbReceiver)
+            } catch (e: Exception) {
+                // Receiver may not be registered
+            }
         }
 
         // Disconnect all cameras
@@ -183,7 +203,15 @@ class UsbDeviceManager @Inject constructor(
      *
      * INV-MULTI-002: Enforces maximum camera limit
      */
-    suspend fun connectDevice(device: UsbDevice): CameraConnection? {
+    suspend fun connectDevice(device: UsbDevice): CameraConnection? = connectMutex.withLock {
+        connectDeviceLocked(device)
+    }
+
+    private suspend fun connectDeviceLocked(device: UsbDevice): CameraConnection? {
+        // Already connected (same USB device node): reuse instead of opening it twice.
+        _connectedCameras.value.values.firstOrNull { it.device.deviceName == device.deviceName }
+            ?.let { return it }
+
         // INV-MULTI-002: Check maximum camera limit
         if (_connectedCameras.value.size >= DxoOneConstants.MAX_CAMERAS) {
             return null
@@ -213,9 +241,7 @@ class UsbDeviceManager @Inject constructor(
         // Initialize
         val success = cameraConnection.initialize()
         if (success) {
-            val cameras = _connectedCameras.value.toMutableMap()
-            cameras[cameraConnection.id] = cameraConnection
-            _connectedCameras.value = cameras
+            _connectedCameras.update { it + (cameraConnection.id to cameraConnection) }
             return cameraConnection
         } else {
             cameraConnection.disconnect()
@@ -245,7 +271,8 @@ class UsbDeviceManager @Inject constructor(
      * Handle device detachment.
      */
     private fun handleDeviceDetached(device: UsbDevice) {
-        val deviceSerial = device.serialNumber
+        // Match by device node only: reading device.serialNumber here can throw
+        // SecurityException once the system has revoked access to a detached device.
         val cameras = _connectedCameras.value.toMutableMap()
 
         // Find and remove disconnected camera

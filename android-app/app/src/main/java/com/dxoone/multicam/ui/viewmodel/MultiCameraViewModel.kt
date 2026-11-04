@@ -3,9 +3,11 @@ package com.dxoone.multicam.ui.viewmodel
 import android.hardware.usb.UsbDevice
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
+import com.dxoone.multicam.data.SettingsPreferences
 import com.dxoone.multicam.domain.model.CameraEvent
 import com.dxoone.multicam.domain.model.CameraUiState
 import com.dxoone.multicam.domain.model.MultiCameraUiState
+import com.dxoone.multicam.service.CameraSettingsApplier
 import com.dxoone.multicam.service.CaptureMode
 import com.dxoone.multicam.service.MultiCaptureResult
 import com.dxoone.multicam.usb.CameraConnection
@@ -13,12 +15,19 @@ import com.dxoone.multicam.usb.ConnectionState
 import com.dxoone.multicam.usb.DxoOneConstants
 import com.dxoone.multicam.usb.UsbDeviceManager
 import dagger.hilt.android.lifecycle.HiltViewModel
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -34,7 +43,8 @@ import javax.inject.Inject
  */
 @HiltViewModel
 class MultiCameraViewModel @Inject constructor(
-    private val usbDeviceManager: UsbDeviceManager
+    private val usbDeviceManager: UsbDeviceManager,
+    private val settingsPreferences: SettingsPreferences
 ) : ViewModel() {
 
     private val _uiState = MutableStateFlow(MultiCameraUiState())
@@ -46,8 +56,27 @@ class MultiCameraViewModel @Inject constructor(
     // Available USB devices (not yet connected)
     private var availableDevices: List<UsbDevice> = emptyList()
 
-    // Track which cameras are selected for capture (by camera ID)
-    private val selectedCameraIds = mutableSetOf<String>()
+    // Cameras selected for capture (by camera ID). A StateFlow so updates are atomic
+    // regardless of which thread they come from.
+    private val selectedCameraIds = MutableStateFlow<Set<String>>(emptySet())
+
+    /**
+     * Per-camera UI state, derived from each camera's own flows (connection state,
+     * battery, live-view frame, nickname) plus the selection. Any change on any camera
+     * reaches the UI, not just changes that happen to coincide with a new frame.
+     */
+    @OptIn(ExperimentalCoroutinesApi::class)
+    private val cameraStates: Flow<List<CameraUiState>> = usbDeviceManager.connectedCameras
+        .flatMapLatest { cameras ->
+            if (cameras.isEmpty()) {
+                flowOf(emptyList<CameraUiState>())
+            } else {
+                combine(cameras.values.map(::cameraStateFlow)) { it.toList() }
+            }
+        }
+        .combine(selectedCameraIds) { states, selected ->
+            states.map { it.copy(isSelected = it.id in selected) }
+        }
 
     init {
         // Check USB Host support
@@ -55,8 +84,8 @@ class MultiCameraViewModel @Inject constructor(
             it.copy(isUsbHostSupported = usbDeviceManager.isUsbHostSupported())
         }
 
-        // Initialize USB device manager
-        usbDeviceManager.initialize()
+        // Receivers are registered once per process (DxoOneMultiCamApp); just rescan.
+        usbDeviceManager.refreshDevices()
 
         // Observe available devices
         viewModelScope.launch {
@@ -68,12 +97,35 @@ class MultiCameraViewModel @Inject constructor(
             }
         }
 
-        // Observe connected cameras
+        // Drop selections for cameras that went away
         viewModelScope.launch {
             usbDeviceManager.connectedCameras.collect { cameras ->
-                updateCameraStates(cameras.values.toList())
+                selectedCameraIds.update { it intersect cameras.keys }
             }
         }
+
+        // Publish camera state
+        viewModelScope.launch {
+            cameraStates.collect { states ->
+                _uiState.update { it.copy(cameras = states) }
+            }
+        }
+    }
+
+    private fun cameraStateFlow(camera: CameraConnection): Flow<CameraUiState> = combine(
+        camera.connectionState,
+        camera.batteryLevel,
+        camera.liveViewFrame,
+        camera.nicknameFlow
+    ) { connectionState, battery, frame, nickname ->
+        CameraUiState(
+            id = camera.id,
+            displayName = camera.displayName,
+            nickname = nickname,
+            connectionState = connectionState,
+            batteryLevel = battery,
+            liveViewFrame = frame
+        )
     }
 
     /**
@@ -136,22 +188,33 @@ class MultiCameraViewModel @Inject constructor(
                 _uiState.update {
                     it.copy(error = "Failed to connect to camera")
                 }
-            } else {
-                // Auto-start live view for connected camera
-                startLiveViewForCamera(connection)
+                return@launch
             }
-        }
-    }
 
-    /**
-     * Start live view streaming for a camera.
-     * Updates the UI state when frames are received.
-     */
-    private fun startLiveViewForCamera(camera: CameraConnection) {
-        viewModelScope.launch {
-            camera.startLiveView { bitmap ->
-                // Update UI state when new frame arrives
-                updateCameraStates(usbDeviceManager.connectedCameras.value.values.toList())
+            // Bring the new camera in line with the saved profile so every camera in the
+            // rig shoots with the same settings, then start live view if enabled.
+            val settings = settingsPreferences.settingsFlow.first()
+            try {
+                val result = CameraSettingsApplier.apply(connection, settings)
+                if (!result.succeeded) {
+                    _uiState.update {
+                        it.copy(
+                            error = "${connection.displayName}: saved settings not confirmed " +
+                                "(${result.failedSettings.joinToString()})"
+                        )
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                _uiState.update {
+                    it.copy(error = "${connection.displayName}: failed to apply saved settings")
+                }
+            }
+
+            if (settings.liveViewEnabled && !connection.isLiveViewActive) {
+                // Frames reach the UI through connection.liveViewFrame (see cameraStates).
+                connection.startLiveView { }
             }
         }
     }
@@ -165,17 +228,17 @@ class MultiCameraViewModel @Inject constructor(
     }
 
     private fun renameCamera(cameraId: String, newName: String) {
+        // Observed through CameraConnection.nicknameFlow.
         usbDeviceManager.getCamera(cameraId)?.nickname = newName.ifBlank { null }
-        // Force UI update
-        updateCameraStates(usbDeviceManager.connectedCameras.value.values.toList())
     }
 
     private fun captureAll() {
         val allCameras = usbDeviceManager.connectedCameras.value
 
         // Filter to selected cameras only, or all if none selected
-        val cameras = if (selectedCameraIds.isNotEmpty()) {
-            allCameras.filterKeys { it in selectedCameraIds }.values.toList()
+        val selected = selectedCameraIds.value
+        val cameras = if (selected.isNotEmpty()) {
+            allCameras.filterKeys { it in selected }.values.toList()
         } else {
             allCameras.values.toList()
         }
@@ -286,54 +349,24 @@ class MultiCameraViewModel @Inject constructor(
      * Toggle selection state of a specific camera.
      */
     private fun toggleCameraSelection(cameraId: String) {
-        if (selectedCameraIds.contains(cameraId)) {
-            selectedCameraIds.remove(cameraId)
-        } else {
-            selectedCameraIds.add(cameraId)
-        }
-        // Refresh UI to show updated selection
-        updateCameraStates(usbDeviceManager.connectedCameras.value.values.toList())
+        selectedCameraIds.update { if (cameraId in it) it - cameraId else it + cameraId }
     }
 
     /**
      * Select all connected cameras.
      */
     private fun selectAllCameras() {
-        selectedCameraIds.clear()
-        selectedCameraIds.addAll(usbDeviceManager.connectedCameras.value.keys)
-        updateCameraStates(usbDeviceManager.connectedCameras.value.values.toList())
+        selectedCameraIds.value = usbDeviceManager.connectedCameras.value.keys
     }
 
     /**
      * Deselect all cameras (will capture all when none selected).
      */
     private fun deselectAllCameras() {
-        selectedCameraIds.clear()
-        updateCameraStates(usbDeviceManager.connectedCameras.value.values.toList())
+        selectedCameraIds.value = emptySet()
     }
 
-    private fun updateCameraStates(cameras: List<CameraConnection>) {
-        // Clean up selection state for disconnected cameras
-        val connectedIds = cameras.map { it.id }.toSet()
-        selectedCameraIds.retainAll(connectedIds)
-
-        val cameraStates = cameras.map { camera ->
-            CameraUiState(
-                id = camera.id,
-                displayName = camera.displayName,
-                nickname = camera.nickname,
-                connectionState = camera.connectionState.value,
-                batteryLevel = camera.batteryLevel.value,
-                liveViewFrame = camera.liveViewFrame.value,
-                isSelected = camera.id in selectedCameraIds
-            )
-        }
-
-        _uiState.update { it.copy(cameras = cameraStates) }
-    }
-
-    override fun onCleared() {
-        super.onCleared()
-        usbDeviceManager.cleanup()
-    }
+    // Cameras are not disconnected in onCleared(): they are owned by the process-wide
+    // UsbDeviceManager and kept alive by CameraManagerService, so they survive the
+    // Activity being recreated or backgrounded.
 }
