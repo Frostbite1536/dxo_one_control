@@ -200,16 +200,12 @@ class UsbDeviceManager @Inject constructor(
         // Open connection
         val connection = usbManager.openDevice(device) ?: return null
 
-        // Get interfaces
-        val controlInterface = device.getInterface(DxoOneConstants.INTERFACE_CONTROL)
-        val dataInterface = device.getInterface(DxoOneConstants.INTERFACE_DATA)
-
-        // Create camera connection
+        // Create camera connection. It locates and claims its interfaces itself
+        // (device.getInterface(i) is a descriptor index, not an interface number) and
+        // closes the connection if initialization fails.
         val cameraConnection = CameraConnection(
             device = device,
-            connection = connection,
-            controlInterface = controlInterface,
-            dataInterface = dataInterface
+            connection = connection
         )
 
         // Initialize

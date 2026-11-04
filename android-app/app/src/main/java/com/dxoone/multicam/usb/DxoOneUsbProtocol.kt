@@ -2,20 +2,38 @@ package com.dxoone.multicam.usb
 
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
+import android.util.Log
+import com.google.gson.JsonObject
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.nio.ByteBuffer
-import java.nio.ByteOrder
+import kotlinx.coroutines.withTimeoutOrNull
+import java.io.IOException
+
+/** No reply to an RPC request arrived within its timeout. */
+class DxoCommandTimeoutException(val method: String, val timeoutMs: Long) :
+    IOException("No reply to $method within ${timeoutMs}ms")
+
+/** The transport was stopped or the device stopped responding. */
+class DxoTransportClosedException(message: String, cause: Throwable? = null) :
+    IOException(message, cause)
 
 /**
- * USB Protocol implementation for DXO One camera.
+ * USB transport for one DXO One camera.
  *
- * Handles low-level USB communication including:
- * - JSON-RPC message encoding/decoding
- * - Binary framing with headers
- * - Bulk transfer operations
+ * Owns the bulk endpoints of a single camera:
+ * - ONE reader, on a dedicated thread, is the only code that reads bulk-IN. Every packet
+ *   goes through [DxoOneStreamDemux], which routes RPC replies to the waiting request,
+ *   notifications to [onNotification] and live-view frames to [onJpegFrame].
+ * - All writes go through one write lock and are checked for a full-length transfer.
+ * - [sendCommand] allows only one RPC in flight per camera (request mutex), so replies
+ *   without an id can still be attributed safely.
  *
- * Ported from dxo1usb.js WebUSB implementation.
+ * Callbacks are invoked on the reader thread and must not block.
+ *
+ * Ported from dxo1usb.js; the JS transport (DxoTransport.js) follows the same rules.
  *
  * Invariants:
  * - INV-DATA-001: USB messages must be valid byte arrays with correct length
@@ -25,237 +43,249 @@ import java.nio.ByteOrder
 class DxoOneUsbProtocol(
     private val connection: UsbDeviceConnection,
     private val endpointIn: UsbEndpoint,
-    private val endpointOut: UsbEndpoint
+    private val endpointOut: UsbEndpoint,
+    private val name: String = "camera",
+    private val onJpegFrame: (ByteArray) -> Unit = {},
+    private val onNotification: (method: String, message: JsonObject) -> Unit = { _, _ -> },
+    private val onFatalError: (Throwable) -> Unit = {}
 ) {
-    private var sequenceId = 0
+    private val writeLock = Any()
+    private val requestMutex = Mutex()
+    private var nextId = 0 // guarded by requestMutex
+
+    @Volatile private var running = false
+    @Volatile private var fatalError: Throwable? = null
+    @Volatile private var inFlight: CompletableDeferred<JsonRpcResponse>? = null
+    private var readerThread: Thread? = null
+    private val initSignatureSeen = CompletableDeferred<Unit>()
+
+    private val demux = DxoOneStreamDemux(
+        events = object : DxoOneStreamDemux.Events {
+            override fun onInitSignature() {
+                try {
+                    writeAck()
+                } catch (e: IOException) {
+                    Log.w(TAG, "[$name] failed to ACK init signature", e)
+                }
+                initSignatureSeen.complete(Unit)
+            }
+
+            override fun onNotification(method: String, message: JsonObject) {
+                Log.d(TAG, "[$name] notification: $method")
+                this@DxoOneUsbProtocol.onNotification(method, message)
+            }
+
+            override fun onJpegFrame(frame: ByteArray) {
+                this@DxoOneUsbProtocol.onJpegFrame(frame)
+            }
+        },
+        log = { Log.w(TAG, "[$name] $it") }
+    )
+
+    val isRunning: Boolean get() = running
 
     /**
-     * Initialize the connection by draining any existing data and sending ACK.
+     * Start the reader thread, send the initial ACK and wait (bounded) for the camera's
+     * init signature. A missing init signature only produces a warning.
+     *
+     * @throws IOException if the initial ACK cannot be written
      */
-    suspend fun initialize(): Boolean = withContext(Dispatchers.IO) {
-        try {
-            // Send initial ACK
-            transferOut(DxoOneConstants.METADATA_INIT_RESPONSE_SIGNATURE)
-
-            // Drain any pre-existing data from device buffer
-            var buffer: ByteArray
-            do {
-                buffer = transferIn(DxoOneConstants.MAX_PACKET_SIZE)
-                if (buffer.contentEquals(DxoOneConstants.METADATA_INIT_SIGNATURE)) {
-                    transferOut(DxoOneConstants.METADATA_INIT_RESPONSE_SIGNATURE)
-                    break
-                }
-            } while (buffer.isNotEmpty())
-
-            true
-        } catch (e: Exception) {
-            false
+    suspend fun initialize() {
+        startReader()
+        withContext(Dispatchers.IO) { writeAck() }
+        val seen = withTimeoutOrNull(DxoOneConstants.INIT_SIGNATURE_WAIT_MS) {
+            initSignatureSeen.await()
+        }
+        if (seen == null) {
+            Log.w(
+                TAG,
+                "[$name] no init signature within ${DxoOneConstants.INIT_SIGNATURE_WAIT_MS}ms; proceeding"
+            )
         }
     }
 
+    /** Enable/disable live-view accumulation. Video bytes are discarded while disabled. */
+    fun setLiveViewEnabled(enabled: Boolean) {
+        demux.liveViewEnabled = enabled
+    }
+
     /**
-     * Send a JSON-RPC command and receive the response.
+     * Send a JSON-RPC command and wait for its reply.
      *
-     * @param method The JSON-RPC method name (validated against safe commands)
-     * @param params Optional parameters for the method
-     * @return JsonRpcResponse or null on failure
+     * Only one request is in flight per camera; concurrent callers queue on a mutex.
+     * The timeout covers the wait for the reply (not the wait for the mutex).
+     *
+     * @return the matched reply (check [JsonRpcResponse.isSuccess])
+     * @throws IllegalArgumentException for an unknown command
+     * @throws DxoCommandTimeoutException if no reply arrives within [timeoutMs]
+     * @throws DxoTransportClosedException if the transport is stopped or the device died
+     * @throws IOException if a write fails
      */
     suspend fun sendCommand(
         method: String,
-        params: Map<String, Any>? = null
-    ): JsonRpcResponse? = withContext(Dispatchers.IO) {
+        params: Map<String, Any>? = null,
+        timeoutMs: Long = defaultTimeoutFor(method)
+    ): JsonRpcResponse {
         // INV-SEC-003: Validate command before transmission
         if (!DxoOneMethods.isValidCommand(method)) {
             throw IllegalArgumentException("Unknown command: $method")
         }
 
+        return requestMutex.withLock {
+            ensureOpen()
+            val id = nextId++
+            val payload = (JsonRpcRequest(id = id, method = method, params = params).toJson() +
+                "\u0000").toByteArray(Charsets.UTF_8)
+            // INV-DATA-001: proper message format
+            val message = DxoOneStreamDemux.buildRpcMessage(payload)
+
+            val deferred = CompletableDeferred<JsonRpcResponse>()
+            demux.registerRequest(id) { deferred.complete(it) }
+            inFlight = deferred
+            try {
+                // The device may have died between ensureOpen() and registration.
+                ensureOpen()
+                withContext(Dispatchers.IO) {
+                    synchronized(writeLock) {
+                        writeFully(DxoOneConstants.METADATA_INIT_RESPONSE_SIGNATURE)
+                        writeFully(message)
+                    }
+                }
+                withTimeoutOrNull(timeoutMs) { deferred.await() }
+                    ?: throw DxoCommandTimeoutException(method, timeoutMs)
+            } finally {
+                inFlight = null
+                demux.unregisterRequest(id)
+            }
+        }
+    }
+
+    /**
+     * Stop the reader thread (bounded join) and fail the in-flight request.
+     * Must be called BEFORE releasing interfaces / closing the connection.
+     */
+    fun stop() {
+        running = false
+        failInFlight(DxoTransportClosedException("Transport stopped"))
+        val thread = readerThread
+        if (thread != null && thread !== Thread.currentThread()) {
+            try {
+                thread.join(DxoOneConstants.READER_JOIN_TIMEOUT_MS)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+            }
+            if (thread.isAlive) {
+                Log.w(TAG, "[$name] reader thread did not exit within ${DxoOneConstants.READER_JOIN_TIMEOUT_MS}ms")
+            }
+        }
+        readerThread = null
+    }
+
+    // ---------------------------------------------------------------------------------
+    // Reader
+    // ---------------------------------------------------------------------------------
+
+    private fun startReader() {
+        if (running) return
+        running = true
+        readerThread = Thread({ readLoop() }, "dxo-usb-reader-$name").apply {
+            isDaemon = true
+            start()
+        }
+    }
+
+    private fun readLoop() {
+        val buffer = ByteArray(DxoOneConstants.MAX_PACKET_SIZE)
+        var fastFailures = 0
         try {
-            // Send ACK first
-            transferOut(DxoOneConstants.METADATA_INIT_RESPONSE_SIGNATURE)
-
-            // Build JSON-RPC request
-            val request = JsonRpcRequest(
-                id = sequenceId++,
-                method = method,
-                params = params
-            )
-            val payload = (request.toJson() + "\u0000").toByteArray(Charsets.UTF_8)
-
-            // Build message with headers (INV-DATA-001: proper message format)
-            val message = buildRpcMessage(payload)
-            transferOut(message)
-
-            // Receive response
-            receiveRpcResponse()
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /**
-     * Build a complete RPC message with proper headers.
-     * Format: RPC_HEADER + message_size(little-endian) + TRAILER + payload
-     */
-    private fun buildRpcMessage(payload: ByteArray): ByteArray {
-        // Message size in little-endian (2 bytes)
-        val sizeBytes = byteArrayOf(
-            (payload.size and 0xFF).toByte(),
-            ((payload.size shr 8) and 0xFF).toByte()
-        )
-
-        // Build message details: size + trailer
-        val msgDetails = sizeBytes + DxoOneConstants.RPC_HEADER_TRAILER
-
-        // Complete message: header + details + payload
-        return DxoOneConstants.RPC_HEADER + msgDetails + payload
-    }
-
-    /**
-     * Receive and parse a JSON-RPC response.
-     */
-    private suspend fun receiveRpcResponse(): JsonRpcResponse? {
-        var metadata = transferIn(DxoOneConstants.MAX_PACKET_SIZE)
-
-        // Handle metadata init signature if present
-        if (metadata.contentEquals(DxoOneConstants.METADATA_INIT_SIGNATURE)) {
-            transferOut(DxoOneConstants.METADATA_INIT_RESPONSE_SIGNATURE)
-            metadata = transferIn(DxoOneConstants.MAX_PACKET_SIZE)
-        }
-
-        if (metadata.size < 32) return null
-
-        // Extract response size from little-endian bytes at offset 8-9
-        val responseSize = (metadata[8].toInt() and 0xFF) or
-            ((metadata[9].toInt() and 0xFF) shl 8)
-
-        if (responseSize == 0) return null
-
-        // Collect response data
-        val responseBuffer = ByteArray(responseSize)
-        val initialData = metadata.copyOfRange(32, metadata.size)
-        System.arraycopy(initialData, 0, responseBuffer, 0,
-            minOf(initialData.size, responseSize))
-        var offset = initialData.size
-
-        // Read remaining data if needed
-        while (offset < responseSize) {
-            val payload = transferIn(DxoOneConstants.MAX_PACKET_SIZE)
-
-            if (payload.contentEquals(DxoOneConstants.METADATA_INIT_SIGNATURE)) {
-                transferOut(DxoOneConstants.METADATA_INIT_RESPONSE_SIGNATURE)
-                break
-            }
-
-            val copySize = minOf(payload.size, responseSize - offset)
-            System.arraycopy(payload, 0, responseBuffer, offset, copySize)
-            offset += payload.size
-        }
-
-        // Parse JSON response
-        val jsonString = responseBuffer.toString(Charsets.UTF_8)
-            .replace("\u0000", "")
-            .trim()
-
-        val response = JsonRpcResponse.fromJson(jsonString)
-
-        // Handle USB flush notification by retrying
-        if (response?.method == DxoOneMethods.USB_FLUSH_FORCED) {
-            return receiveRpcResponse()
-        }
-
-        return response
-    }
-
-    /**
-     * Receive a JPEG frame from live view stream.
-     */
-    suspend fun receiveJpegFrame(): ByteArray? = withContext(Dispatchers.IO) {
-        try {
-            var metadata = transferIn(DxoOneConstants.MAX_PACKET_SIZE)
-
-            // Handle metadata init signature
-            if (metadata.contentEquals(DxoOneConstants.METADATA_INIT_SIGNATURE)) {
-                transferOut(DxoOneConstants.METADATA_INIT_RESPONSE_SIGNATURE)
-                metadata = transferIn(DxoOneConstants.MAX_PACKET_SIZE)
-            }
-
-            // Check for JPEG metadata header and extract initial data
-            val jpegBuffer = mutableListOf<Byte>()
-            val headerIndex = findSubarray(metadata, DxoOneConstants.JPG_METADATA_HEADER)
-            if (headerIndex >= 0) {
-                // Skip the 32-byte header
-                metadata.drop(32).forEach { jpegBuffer.add(it) }
-            } else {
-                metadata.forEach { jpegBuffer.add(it) }
-            }
-
-            // Continue reading until we find JPEG trailer (FFD9)
-            while (true) {
-                val payload = transferIn(DxoOneConstants.MAX_PACKET_SIZE)
-                payload.forEach { jpegBuffer.add(it) }
-
-                val data = jpegBuffer.toByteArray()
-                if (findSubarray(data, DxoOneConstants.JPG_TRAILER) >= 0) {
-                    break
+            while (running) {
+                val started = System.nanoTime()
+                val n = connection.bulkTransfer(
+                    endpointIn, buffer, buffer.size, DxoOneConstants.READ_POLL_TIMEOUT_MS
+                )
+                if (!running) break
+                when {
+                    n > 0 -> {
+                        fastFailures = 0
+                        try {
+                            demux.feed(buffer, n)
+                        } catch (e: Exception) {
+                            Log.e(TAG, "[$name] demux failed on a $n-byte packet", e)
+                        }
+                    }
+                    n < 0 -> {
+                        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+                        if (elapsedMs < DxoOneConstants.DEAD_DEVICE_FAST_FAIL_MS) {
+                            fastFailures++
+                            if (fastFailures >= DxoOneConstants.DEAD_DEVICE_FAST_FAIL_COUNT) {
+                                fail(
+                                    DxoTransportClosedException(
+                                        "Device not responding ($fastFailures immediate bulk-IN failures)"
+                                    )
+                                )
+                                break
+                            }
+                        } else {
+                            fastFailures = 0 // an ordinary poll timeout
+                        }
+                    }
+                    // n == 0: zero-length packet, nothing to do
                 }
             }
+        } catch (t: Throwable) {
+            if (running) fail(t)
+        }
+    }
 
-            // Extract valid JPEG data between header and trailer
-            val data = jpegBuffer.toByteArray()
-            val headerIdx = findSubarray(data, DxoOneConstants.JPG_HEADER)
-            val trailerIdx = findSubarray(data, DxoOneConstants.JPG_TRAILER, headerIdx + 1)
-
-            if (headerIdx >= 0 && trailerIdx > headerIdx) {
-                data.copyOfRange(headerIdx, trailerIdx + 2)
-            } else {
-                null
-            }
+    private fun fail(error: Throwable) {
+        if (fatalError != null) return
+        fatalError = error
+        running = false
+        Log.e(TAG, "[$name] transport failed", error)
+        failInFlight(
+            error as? DxoTransportClosedException
+                ?: DxoTransportClosedException(error.message ?: "Transport failed", error)
+        )
+        try {
+            onFatalError(error)
         } catch (e: Exception) {
-            null
+            Log.e(TAG, "[$name] onFatalError callback threw", e)
         }
     }
 
-    /**
-     * Low-level USB bulk transfer OUT.
-     */
-    private fun transferOut(data: ByteArray): Int {
-        return connection.bulkTransfer(
-            endpointOut,
-            data,
-            data.size,
-            DxoOneConstants.USB_TIMEOUT_MS
-        )
+    private fun failInFlight(error: Throwable) {
+        inFlight?.completeExceptionally(error)
     }
 
-    /**
-     * Low-level USB bulk transfer IN.
-     */
-    private fun transferIn(maxSize: Int): ByteArray {
-        val buffer = ByteArray(maxSize)
-        val bytesRead = connection.bulkTransfer(
-            endpointIn,
-            buffer,
-            maxSize,
-            DxoOneConstants.USB_TIMEOUT_MS
-        )
-        return if (bytesRead > 0) buffer.copyOf(bytesRead) else ByteArray(0)
+    private fun ensureOpen() {
+        fatalError?.let { throw DxoTransportClosedException("Transport failed: ${it.message}", it) }
+        if (!running) throw DxoTransportClosedException("Transport not running")
     }
 
-    /**
-     * Find the index of a subarray within an array.
-     */
-    private fun findSubarray(array: ByteArray, subarray: ByteArray, startIndex: Int = 0): Int {
-        if (subarray.isEmpty()) return -1
-        outer@ for (i in startIndex..array.size - subarray.size) {
-            for (j in subarray.indices) {
-                if (array[i + j] != subarray[j]) continue@outer
-            }
-            return i
+    // ---------------------------------------------------------------------------------
+    // Writes
+    // ---------------------------------------------------------------------------------
+
+    private fun writeAck() {
+        synchronized(writeLock) { writeFully(DxoOneConstants.METADATA_INIT_RESPONSE_SIGNATURE) }
+    }
+
+    /** Must be called with [writeLock] held. */
+    private fun writeFully(data: ByteArray) {
+        val n = connection.bulkTransfer(endpointOut, data, data.size, DxoOneConstants.USB_TIMEOUT_MS)
+        if (n != data.size) {
+            throw IOException("bulk-OUT wrote $n of ${data.size} bytes")
         }
-        return -1
     }
 
     companion object {
         private const val TAG = "DxoOneUsbProtocol"
+
+        fun defaultTimeoutFor(method: String): Long =
+            if (method == DxoOneMethods.PHOTO_TAKE) {
+                DxoOneConstants.CAPTURE_TIMEOUT_MS.toLong()
+            } else {
+                DxoOneConstants.COMMAND_TIMEOUT_MS.toLong()
+            }
     }
 }
