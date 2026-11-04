@@ -15,14 +15,14 @@ import java.util.UUID
  *
  * Invariants:
  * - INV-MULTI-003: Partial failure handling with detailed status reporting
- * - INV-MULTI-004: Synchronization accuracy documentation (~50ms variance)
+ * - INV-MULTI-004: Synchronization accuracy documentation (variance not yet measured)
  */
 class SyncCaptureEngine {
 
     /**
      * Capture photos from all cameras simultaneously using parallel dispatch.
      *
-     * Expected synchronization variance: ~20-65ms (typically ~50ms)
+     * Synchronization variance: not yet measured on hardware (best effort)
      * This is due to USB scheduling, hub arbitration, and camera processing delays.
      *
      * @param cameras List of connected cameras to capture from
@@ -199,7 +199,7 @@ data class MultiCaptureResult(
 enum class CaptureMode {
     /**
      * Parallel dispatch - Best effort synchronization.
-     * Expected variance: ~20-65ms (typically ~50ms)
+     * Variance: not yet measured on hardware (best effort)
      */
     PARALLEL,
 

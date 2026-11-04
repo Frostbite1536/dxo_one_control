@@ -177,7 +177,7 @@ Context:
 - Need to confirm all invariants are maintained
 
 Check:
-- All 11 invariants from INVARIANTS.md
+- All 15 invariants from INVARIANTS.md
 - Identify any violations or ambiguities
 - Propose new invariants if needed
 

@@ -110,7 +110,7 @@ fun MainScreen(
                             onDismissRequest = { showModeMenu = false }
                         ) {
                             DropdownMenuItem(
-                                text = { Text("Parallel (~50ms sync)") },
+                                text = { Text("Parallel (best effort)") },
                                 onClick = {
                                     viewModel.onEvent(CameraEvent.SetCaptureMode(CaptureMode.PARALLEL))
                                     showModeMenu = false

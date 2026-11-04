@@ -58,7 +58,7 @@ Receive response → Parse status → Update UI
 
 ### 2. Invariant Check
 
-**Review all 11 invariants** in [INVARIANTS.md](../docs/INVARIANTS.md):
+**Review all 15 invariants** in [INVARIANTS.md](../docs/INVARIANTS.md):
 
 **Data Integrity**:
 - [ ] INV-DATA-001: USB messages as Uint8Array with proper length

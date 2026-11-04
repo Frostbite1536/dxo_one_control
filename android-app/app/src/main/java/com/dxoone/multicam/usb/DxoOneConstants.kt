@@ -74,7 +74,7 @@ object DxoOneConstants {
     /** Time to wait for the reply to an ordinary RPC command. */
     const val COMMAND_TIMEOUT_MS = 10000
     /** Time to wait for the reply to dxo_photo_take (covers long exposures). */
-    const val CAPTURE_TIMEOUT_MS = 30000
+    const val CAPTURE_TIMEOUT_MS = 40000
     /** Poll timeout of each bulk-IN read in the reader thread (keeps stop() responsive). */
     const val READ_POLL_TIMEOUT_MS = 250
     /** How long initialization waits for the camera's init signature before proceeding. */

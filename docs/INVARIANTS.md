@@ -27,11 +27,14 @@ const message = new Uint8Array([0x01, 0x02, 0x03]);
 message.length = 5;  // Length mismatch
 ```
 
-**Enforcement**:
-- Type checking before USB transmission
-- Length validation before send
-- Unit tests for message construction
-- Runtime assertions in development mode
+**Enforcement (as implemented)**:
+- `encodeRpcRequest` (`DxoTransport.js`) builds every outgoing JSON-RPC frame as a `Uint8Array` and throws `RangeError` for payloads over 0xFFFF bytes (the length field is 16-bit, so it would wrap). Test: `test/transport.test.mjs`.
+- Android: `DxoOneUsbProtocol` writes through one write lock and checks each write transferred its full length.
+- Responses: `DxoStreamDemux` drops packets it cannot parse (unparseable JSON, oversized buffers) instead of throwing.
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- Runtime type assertions or TypeScript types for callers of the low-level send path (callers are internal; only the length check exists).
+- Runtime assertions in development mode.
 
 ### INV-DATA-002: DNG File Colorspace Preservation
 
@@ -57,11 +60,13 @@ resizeImage(dng, { convertToSRGB: true });
 processImage(dng);  // defaults to different colorspace
 ```
 
-**Enforcement**:
-- Explicit colorspace parameter in all image processing functions
-- Unit tests verify colorspace preservation
-- Code review checklist item
-- Integration tests compare input/output colorspace metadata
+**Enforcement (as implemented)**:
+- `resizeDNG.mjs` converts with a bare `sips -s format jpeg ... --resampleHeightWidth` call and does not touch colorspace options itself, so it does not *deliberately* convert; whether `sips` preserves the embedded profile is unverified.
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- Explicit colorspace parameter or inspection of input/output profiles.
+- Any tests (the script has none and is macOS-only).
+- Integration tests comparing input/output colorspace metadata.
 
 ### INV-DATA-003: Connection State Consistency
 
@@ -96,19 +101,22 @@ if (wasConnectedBefore) {
 // connectionState remains 'connected' after device removed
 ```
 
-**Enforcement**:
-- Real-time connection status checking before commands
-- Event listeners for disconnect events
-- Automatic state cleanup on disconnect
-- Unit tests for state transitions
+**Enforcement (as implemented)**:
+- JS `CameraDevice`: `isConnected` is cleared on `close()`, `markDisconnected()` and on a fatal transport error (`_onTransportFailure`); `CameraManager` listens for the WebUSB `disconnect` event and removes the camera. Requests on a disconnected camera throw.
+- Android `CameraConnection`: `ConnectionState` moves to ERROR on a fatal transport error (`onTransportFailed`) and to DISCONNECTED on `disconnect()`; `UsbDeviceManager` handles `USB_DEVICE_DETACHED`.
+- Tests: transport tests cover unplug failing the in-flight request (`test/transport.test.mjs`).
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- Pre-command hardware liveness probe (the code relies on events and transfer failures, not a check before each command).
+- UI state is only as fresh as the flows that feed it; the Android UI path from `ConnectionState` to screens was not re-audited.
 
 ---
 
 ## Security Invariants
 
-### INV-SEC-001: USB Device Vendor/Product ID Verification
+### INV-SEC-001: USB Device Vendor ID Verification
 
-**Rule**: WebUSB connection MUST only be established with devices matching DXO One vendor and product IDs. No wildcard or unverified device access.
+**Rule**: WebUSB connection MUST only be established with devices matching the DXO One vendor ID (0x2b8f; a product ID check is desirable but not currently made). No wildcard or unverified device access.
 
 **Rationale**: Prevents accidental or malicious control of non-camera USB devices. Protects users from unintended device access.
 
@@ -132,11 +140,14 @@ const device = await navigator.usb.requestDevice({});
 const filters = [{ vendorId: undefined }];
 ```
 
-**Enforcement**:
-- Hardcoded vendor/product ID constants
-- Filter validation before requestDevice()
-- Code review requirement
-- Documentation of expected device IDs
+**Enforcement (as implemented)**:
+- JS: `PARAMS_DEVICE_REQUEST = { filters: [{ vendorId: 0x2b8f }] }` in `dxo1usb.js` and `CameraManager.js`.
+- Android: `UsbDeviceManager` filters on `DxoOneConstants.VENDOR_ID` (0x2B8F) both when enumerating and in `connectDevice`.
+- **Note:** the filter is **vendorId only**. No product ID check is made on either platform, so any device with that vendor ID is accepted. (The code examples above that show a product ID illustrate the stricter rule.)
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- Product ID matching.
+- A shared constant for the filter (it is duplicated in two JS files).
 
 ### INV-SEC-002: User Permission Required for USB Access
 
@@ -167,11 +178,12 @@ setInterval(async () => {
 }, 1000);
 ```
 
-**Enforcement**:
-- WebUSB API enforces user gesture requirement
-- Code review to prevent auto-connection patterns
-- UI/UX design requires explicit connect button
-- Documentation emphasizes user permission flow
+**Enforcement (as implemented)**:
+- JS: WebUSB `requestDevice()` itself requires a user gesture; the demo pages call it from button handlers.
+- Android: `UsbDeviceManager.connectDevice` returns null unless `hasPermission(device)`, and permission is requested through the system dialog.
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- Automated checks for auto-connection patterns (code review only).
 
 ### INV-SEC-003: Command Validation Before Transmission
 
@@ -208,11 +220,14 @@ function sendCommand(cmdType, payload) {
 sendCommand(userInput, userPayload);  // Direct user input
 ```
 
-**Enforcement**:
-- Whitelist of known-safe commands
-- Input validation for command parameters
-- Unit tests for command validation logic
-- Fuzzing tests to verify rejection of invalid commands
+**Enforcement (as implemented)**:
+- **Android:** `DxoOneMethods.isValidCommand` is an allowlist (`VALID_COMMANDS`), checked in `DxoOneUsbProtocol.sendCommand` before anything is written.
+- **JS: no allowlist.** `transferOutRPC` / `DxoTransport.request` / `CameraManager.sendCommandToAll` send any method name they are given. The invariant is **not enforced in JS**.
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- JS method allowlist and parameter validation.
+- Unit/fuzz tests for command rejection.
+- (The `0x01`-style byte opcode examples above are illustrative; the real protocol is JSON-RPC with `dxo_*` method names.)
 
 ---
 
@@ -242,11 +257,12 @@ Invalid:
 await navigator.usb.requestDevice({ filters });  // May throw in Safari/Firefox
 ```
 
-**Enforcement**:
-- Feature detection at application startup
-- Graceful degradation with clear messaging
-- Unit tests with mocked navigator.usb
-- Documentation lists supported browsers
+**Enforcement (as implemented)**:
+- JS: `open()` in `dxo1usb.js` and `CameraManager.connectCamera` throw a clear "browser / JS environment does not support WebUSB" error when no USB backend is available; `CameraManager.isWebUSBAvailable()` exposes the check.
+- Both accept an injected `usbBackend`, so tests use a fake instead of `navigator.usb`.
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- Page-level graceful degradation in `usb.html` / `multi-camera.html` was not verified here.
 
 ### INV-CONS-002: microUSB Connection Warning
 
@@ -275,11 +291,11 @@ Invalid:
 // No mention of connection type limitations
 ```
 
-**Enforcement**:
-- README includes warning
-- UI displays warning before connection
-- Code comments note limitation
-- Documentation review checklist
+**Enforcement (as implemented)**:
+- `usb.html`, `multi-camera.html` and `README.md` carry the microUSB-only warning.
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- A documentation review checklist (none exists).
 
 ### INV-CONS-003: Error State Recovery
 
@@ -323,11 +339,14 @@ try {
 }
 ```
 
-**Enforcement**:
-- Error handling in all async operations
-- State reset on errors
-- User-facing error messages with action items
-- Integration tests for error scenarios
+**Enforcement (as implemented)**:
+- Every transport request has a timeout (commands 5 s in JS, 10 s on Android; 40 s for `dxo_photo_take` on both), so a silent camera cannot hang a caller; a fatal USB error fails the in-flight request and closes the transport (`DxoTransport`, `DxoOneUsbProtocol`). Tests: `test/transport.test.mjs`.
+- `CameraDevice.initialize()` releases the device on failure; `CameraManager.captureAll` / `sendCommandToAll` convert per-camera failures into error results instead of throwing.
+- Android: transport failure sets `ConnectionState.ERROR`; `disconnect()` is idempotent.
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- Automatic reconnect / retry (nothing retries; recovery means reconnecting the camera).
+- Guaranteed user-visible message for every error path in the UIs.
 
 ---
 
@@ -362,11 +381,13 @@ function sendCommand(commandObject) { }  // Was (type, payload)
 export { sendCommand as transmitCommand };
 ```
 
-**Enforcement**:
-- Semantic versioning (semver)
-- API compatibility tests
-- Changelog review for breaking changes
-- Deprecation warnings before removal
+**Enforcement (as implemented)**:
+- Convention only: `dxo1usb.js` still default-exports `{ open }` and additionally re-exports `CameraDevice` and `CameraManager`.
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- Semantic versioning discipline (`package.json` is at 1.0.0 with no release process).
+- API compatibility tests (the `dxo1usb: ...` tests in `test/transport.test.mjs` cover part of the surface).
+- Changelog / deprecation process.
 
 ### INV-API-002: Uint8Array for Binary Data
 
@@ -394,11 +415,12 @@ function sendBytes(data: Buffer) {  // Node.js Buffer not browser-compatible
 }
 ```
 
-**Enforcement**:
-- TypeScript type annotations (if adopted)
-- JSDoc type comments
-- Runtime type validation in development
-- Unit tests verify Uint8Array input/output
+**Enforcement (as implemented)**:
+- `u8a.js` helpers and `DxoTransport` operate on `Uint8Array`; JSDoc type comments document the interfaces.
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- Runtime type validation at module boundaries.
+- TypeScript (not adopted).
 
 ---
 
@@ -432,11 +454,13 @@ cameras[0].capture();  // Which physical camera is this?
 const cameras = manager.getAllCameras();  // All look the same
 ```
 
-**Enforcement**:
-- CameraDevice class requires unique ID on construction
-- Display name always shows identifying information
-- Nickname support for user-assigned names
-- Serial number displayed in camera details UI
+**Enforcement (as implemented)**:
+- JS `CameraDevice.id` = `usbDevice.serialNumber`, falling back to `vendor-product-Date.now()`. **The fallback is not stable across reconnects** (a camera without a readable serial gets a new id each time).
+- Android `CameraConnection.id` = `device.serialNumber`, falling back to a random UUID, also not stable.
+- `CameraManager` rejects duplicates by id / device object. `displayName` and `nickname` are supported on both platforms.
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- A stable fallback id for cameras with no serial number.
 
 ### INV-MULTI-002: Maximum Camera Limit
 
@@ -467,11 +491,12 @@ async connectCamera() {
 }
 ```
 
-**Enforcement**:
-- MAX_CAMERAS constant in CameraManager
-- Check enforced in connectCamera() method
-- UI disables "Connect" button at limit
-- Clear error message when limit reached
+**Enforcement (as implemented)**:
+- JS: `MAX_CAMERAS = 4`, checked at the top of `CameraManager.connectCamera()`; `multi-camera.html` disables the Connect button at 4.
+- Android: `DxoOneConstants.MAX_CAMERAS = 4`, checked in `UsbDeviceManager.connectDevice`, which runs inside a mutex so concurrent connects are serialized and cannot overshoot; an already-connected device node is reused rather than opened twice.
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- JS: `connectCamera()` awaits the device chooser and `initialize()` after the size check, so two overlapping calls could in principle exceed the limit (the page serializes via user clicks; the class does not).
 
 ### INV-MULTI-003: Partial Failure Handling
 
@@ -518,15 +543,17 @@ async captureAll() {
 }
 ```
 
-**Enforcement**:
-- Use Promise.allSettled() for batch operations
-- Return per-camera status in results
-- UI shows success/failure for each camera
-- Log includes per-camera timing data
+**Enforcement (as implemented)**:
+- JS: `CameraManager.captureAll()` (parallel and sequential) and `sendCommandToAll()` return one entry per camera with `status: 'success' | 'error'`; this is done with `Promise.all` plus a per-camera `.catch`, not literally `Promise.allSettled` (equivalent effect; the example above is the idealized form).
+- `CameraDevice.takePhoto()` throws when the camera answers with a JSON-RPC error, so a refused capture is reported as an error, and transport timeouts / unplug failures also surface as per-camera errors. Tests: `CameraManager: ...` cases in `test/transport.test.mjs`.
+- Android: `SyncCaptureEngine` aggregates per-camera `CaptureResult`s into `MultiCaptureResult` (`failedCameras`, `allSucceeded`).
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- Per-camera timing log lines beyond the single total-time `console.log`.
 
 ### INV-MULTI-004: Synchronization Accuracy Documentation
 
-**Rule**: The system MUST document and log the actual synchronization accuracy. Users MUST be informed that software sync achieves ~50ms variance (not hardware-level < 1ms).
+**Rule**: The system MUST document and log the actual synchronization accuracy. Users MUST be informed that software sync is best-effort (expected tens of milliseconds, not hardware-level < 1ms). The commonly quoted "~50 ms" figure has not been measured.
 
 **Rationale**: Users making assumptions about "simultaneous" capture need realistic expectations. Scientific or professional use cases may require hardware sync which this software cannot provide.
 
@@ -563,11 +590,13 @@ async captureAll() {
 }
 ```
 
-**Enforcement**:
-- UI labels sync mode with expected variance
-- Capture results include timing data
-- Documentation explains sync limitations
-- Console logs timing for debugging
+**Enforcement (as implemented)**:
+- JS: `captureAll()` logs total capture time and mode; each result carries a `timestamp`. `multi-camera.html` labels the modes "Parallel (Best Effort)" / "Sequential (Reliable)".
+- Android: `MainScreen` labels parallel mode "Parallel (~50ms sync)"; `SyncCaptureEngine` computes `syncVarianceMs`.
+- **The "~50 ms" figure is unmeasured** on either platform (nothing was run against real hardware). On Android, `syncVarianceMs` is the spread of per-camera command start times, not of when the shutters fired.
+
+**Not yet enforced** (intent kept; nothing in the code does this):
+- A measured variance figure.
 
 ---
 
@@ -575,11 +604,11 @@ async captureAll() {
 
 - These invariants should be reviewed and updated as the project evolves
 - Breaking an invariant requires explicit justification and team discussion
-- CI/CD should include automated checks for enforcing invariants where possible
+- CI runs `npm test` (syntax check plus transport/manager tests against a fake device), the Android build, unit tests and lint. The earlier advisory grep "invariant checks" were removed; there is no automated invariant checker, so compliance is by tests where listed above and by review
 - New features should consider which invariants apply and document compliance
 
 ---
 
-**Last Updated**: 2026-01-04
-**Document Version**: 1.1
-**Total Invariants**: 15 (11 core + 4 multi-camera)
+**Last Updated**: 2026-11-04
+**Document Version**: 2.0
+**Total Invariants**: 15 (11 core: 3 data, 3 security, 3 consistency, 2 API; plus 4 multi-camera). The Android app applies the same invariants; it has none of its own.

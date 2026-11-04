@@ -264,15 +264,15 @@ function parseResponse(response) {
 // Test each command type separately
 async function testCommands() {
   const tests = [
-    { name: 'Get Status', cmd: 0x01 },
-    { name: 'Get Battery', cmd: 0x15 },
-    { name: 'Capture', cmd: 0x10 }
+    { name: 'Get Status', method: 'dxo_camera_status_get' },
+    { name: 'Get All Settings', method: 'dxo_all_settings_get' },
+    { name: 'Capture', method: 'dxo_photo_take' }
   ];
 
   for (const test of tests) {
     console.log(`\n🧪 Testing: ${test.name}`);
     try {
-      const result = await sendCommand(test.cmd);
+      const result = await sendCommand(test.method); // JSON-RPC method name, e.g. via transferOutRPC
       console.log(`✅ ${test.name} succeeded:`, result);
     } catch (error) {
       console.error(`❌ ${test.name} failed:`, error);
