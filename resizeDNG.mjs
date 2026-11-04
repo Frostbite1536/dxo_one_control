@@ -1,5 +1,6 @@
 import fs from 'fs';
-import { execSync } from 'child_process';
+import path from 'path';
+import { execFileSync } from 'child_process';
 
 const [_NODEBIN, _SCRIPT, dngPath] = process.argv;
 
@@ -24,16 +25,29 @@ function batchResize() {
     }
 
     const files = fs.readdirSync(dngPath);
-    fs.mkdirSync(RESIZED_DIR, { recursive: true });
+    const outDir = path.join(dngPath, RESIZED_DIR);
+    fs.mkdirSync(outDir, { recursive: true });
 
-    try {
-        for (let f of files) {
-            if (f.indexOf('.DNG') === -1) continue;
+    for (const f of files) {
+        if (path.extname(f).toLowerCase() !== '.dng') continue;
 
-            execSync(`sips -s format jpeg ${dngPath}/${f} --resampleHeightWidth ${RESIZED_H} ${RESIZED_W} --out ${dngPath}/${RESIZED_DIR}/${f.replace('.DNG', '.jpg')}`);
+        const input = path.join(dngPath, f);
+        const output = path.join(outDir, `${path.parse(f).name}.jpg`);
+
+        // Arguments are passed directly to sips (no shell), so filenames
+        // containing spaces or shell metacharacters are handled safely.
+        try {
+            execFileSync('sips', [
+                '-s', 'format', 'jpeg',
+                input,
+                '--resampleHeightWidth', String(RESIZED_H), String(RESIZED_W),
+                '--out', output,
+            ], { stdio: ['ignore', 'ignore', 'pipe'] });
+        } catch (e) {
+            const detail = e.stderr ? e.stderr.toString('utf8').trim() : e.message;
+            console.error(`Failed to convert ${f}: ${detail}`);
+            process.exitCode = 1;
         }
-    } catch (e) {
-        console.error(e.stderr.toString('utf8'));
     }
 }
 

@@ -44,11 +44,12 @@
             return;
         }
 
-        // Render camera list (Bug fix: escape camera ID to prevent XSS)
+        // Render camera list. Camera IDs come from the device's USB serial number,
+        // so they are only ever placed in escaped attributes; clicks are handled by
+        // a delegated listener (see bindDelegatedHandlers) instead of inline onclick.
         list.innerHTML = cameras.map(camera => `
             <div class="camera-item ${camera.id === selectedCameraId ? 'selected' : ''}"
-                 data-camera-id="${escapeHtml(camera.id)}"
-                 onclick="window.selectCamera('${escapeJsString(camera.id)}')">
+                 data-camera-id="${escapeHtml(camera.id)}">
                 <div class="camera-header">
                     <span class="camera-name">${escapeHtml(camera.displayName)}</span>
                     <span class="camera-status ${camera.isConnected ? 'connected' : 'disconnected'}">
@@ -114,19 +115,17 @@
             return;
         }
 
-        // Bug fix: escape cameraId to prevent XSS in onclick handlers
-        const escapedId = escapeJsString(cameraId);
         const state = camera.getState();
         $('#camera-details').innerHTML = `
-            <div class="camera-detail-panel">
+            <div class="camera-detail-panel" data-camera-id="${escapeHtml(cameraId)}">
                 <h3>${escapeHtml(state.displayName)}</h3>
                 <div class="camera-actions">
-                    <button onclick="window.takePhotoSingle('${escapedId}')">📸 Take Photo</button>
-                    <button onclick="window.toggleLiveView('${escapedId}')" id="btnLiveView-${escapeHtml(cameraId)}">
+                    <button data-action="takePhoto">📸 Take Photo</button>
+                    <button data-action="toggleLiveView">
                         ${state.isLiveViewActive ? 'Stop Live View' : 'Start Live View'}
                     </button>
-                    <button onclick="window.showRenameDialog('${escapedId}')">✏️ Rename</button>
-                    <button onclick="window.disconnectCamera('${escapedId}')" class="danger">Disconnect</button>
+                    <button data-action="rename">✏️ Rename</button>
+                    <button data-action="disconnect" class="danger">Disconnect</button>
                 </div>
                 <div class="camera-meta">
                     <p><strong>ID:</strong> ${escapeHtml(state.id)}</p>
@@ -144,7 +143,7 @@
         try {
             log('Connecting camera...');
             const camera = await manager.connectCamera();
-            log(`Connected: ${camera.displayName}`);
+            log(`Connected: ${escapeHtml(camera.displayName)}`);
             selectCamera(camera.id);
         } catch (error) {
             log(`<div class="error">Connection failed: ${escapeHtml(error.message)}</div>`);
@@ -199,9 +198,9 @@
         if (!camera) return;
 
         try {
-            log(`Taking photo on ${camera.displayName}...`);
+            log(`Taking photo on ${escapeHtml(camera.displayName)}...`);
             await camera.takePhoto();
-            log(`Photo taken on ${camera.displayName}!`);
+            log(`Photo taken on ${escapeHtml(camera.displayName)}!`);
         } catch (error) {
             log(`<div class="error">Photo failed: ${escapeHtml(error.message)}</div>`);
         }
@@ -272,29 +271,42 @@
     }
 
     /**
-     * Escapes HTML to prevent XSS
+     * Escapes a value for safe use in HTML text AND in quoted attribute values.
+     * (textContent -> innerHTML does not escape quotes, so it is not attribute-safe.)
      */
     function escapeHtml(str) {
-        if (!str) return '';
-        const div = document.createElement('div');
-        div.textContent = str;
-        return div.innerHTML;
+        if (str === null || str === undefined) return '';
+        return String(str)
+            .replace(/&/g, '&amp;')
+            .replace(/</g, '&lt;')
+            .replace(/>/g, '&gt;')
+            .replace(/"/g, '&quot;')
+            .replace(/'/g, '&#39;');
     }
 
     /**
-     * Escapes a string for safe use in JavaScript string literals (single-quoted)
-     * Prevents XSS when embedding values in onclick handlers
+     * Click handling for dynamically rendered camera markup. Camera IDs are read
+     * from data-* attributes (decoded by the browser), never interpolated into JS.
      */
-    function escapeJsString(str) {
-        if (!str) return '';
-        return str
-            .replace(/\\/g, '\\\\')
-            .replace(/'/g, "\\'")
-            .replace(/"/g, '\\"')
-            .replace(/</g, '\\x3C')
-            .replace(/>/g, '\\x3E')
-            .replace(/\n/g, '\\n')
-            .replace(/\r/g, '\\r');
+    function bindDelegatedHandlers() {
+        $('#camera-list').addEventListener('click', (event) => {
+            const item = event.target.closest('.camera-item');
+            if (item) selectCamera(item.dataset.cameraId);
+        });
+
+        $('#camera-details').addEventListener('click', (event) => {
+            const button = event.target.closest('button[data-action]');
+            const panel = event.target.closest('.camera-detail-panel');
+            if (!button || !panel) return;
+
+            const cameraId = panel.dataset.cameraId;
+            switch (button.dataset.action) {
+                case 'takePhoto': return window.takePhotoSingle(cameraId);
+                case 'toggleLiveView': return window.toggleLiveView(cameraId);
+                case 'rename': return window.showRenameDialog(cameraId);
+                case 'disconnect': return window.disconnectCamera(cameraId);
+            }
+        });
     }
 
     // Check WebUSB availability on load
@@ -310,6 +322,7 @@
         }
 
         // Initialize UI
+        bindDelegatedHandlers();
         updateCameraList([]);
     });
 </script>

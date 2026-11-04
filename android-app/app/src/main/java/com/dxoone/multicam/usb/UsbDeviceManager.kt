@@ -160,10 +160,13 @@ class UsbDeviceManager @Inject constructor(
             0
         }
 
+        // The intent must be explicit: Android 14+ (targetSdk 34) rejects a
+        // FLAG_MUTABLE PendingIntent wrapping an implicit intent. It must stay
+        // mutable because UsbManager fills in EXTRA_DEVICE / EXTRA_PERMISSION_GRANTED.
         val permissionIntent = PendingIntent.getBroadcast(
             context,
             0,
-            Intent(ACTION_USB_PERMISSION),
+            Intent(ACTION_USB_PERMISSION).setPackage(context.packageName),
             flags
         )
 

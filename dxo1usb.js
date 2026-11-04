@@ -212,9 +212,9 @@ async function open(usbBackend = navigator.usb) {
         }
 
         const immediateResponse = await transferOutRPC('dxo_setting_set', params);
-        if (immediateResponse.method === 'dxo_setting_applied') {
+        if (immediateResponse?.method === 'dxo_setting_applied') {
             const response = await transferInRPC();
-            const hasSucceeded = result.id === commandSeq && response.result.type === params.type;
+            const hasSucceeded = response?.id === commandSeq && response?.result?.type === params.type;
 
             return hasSucceeded;
         }
@@ -298,7 +298,7 @@ async function open(usbBackend = navigator.usb) {
                     rawOn: bindApplySetting({ "type": "raw", "param": "on" }),
 
                     // Temporal Noise Reduction (TNR) to combine the four RAW files into one new SuperRAW Plus file
-                    tnrOff: bindApplySetting({ "type": "tnr", "param": "on" }),
+                    tnrOff: bindApplySetting({ "type": "tnr", "param": "off" }),
                     tnrOn: bindApplySetting({ "type": "tnr", "param": "on" }),
                 },
 
@@ -418,7 +418,7 @@ async function open(usbBackend = navigator.usb) {
                     sport: bindApplySetting({ "type": "shooting_mode", "param": "sport" }),
                     portrait: bindApplySetting({ "type": "shooting_mode", "param": "portrait" }),
                     landscape: bindApplySetting({ "type": "shooting_mode", "param": "landscape" }),
-                    night: bindApplySetting({ "type": "shooting_mode", "param": " night" }),
+                    night: bindApplySetting({ "type": "shooting_mode", "param": "night" }),
 
                     // Priority shooting modes
                     program: bindApplySetting({ "type": "shooting_mode", "param": "program" }),
@@ -484,7 +484,7 @@ async function open(usbBackend = navigator.usb) {
                 },
             },
 
-            getDigitalZoom: transferOutRPC('dxo_digital_zoom_get', { "type": 'current' }),
+            getDigitalZoom: () => transferOutRPC('dxo_digital_zoom_get', { "type": 'current' }),
 
             // Origin is bottom left corner
             focus: (x, y) => transferOutRPC('dxo_tap_to_focus', { "param": `[${x},${y},256,256]` }),
