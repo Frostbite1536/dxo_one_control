@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
+import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -100,11 +101,12 @@ class UsbDeviceManager @Inject constructor(
             addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
         }
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(usbReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
-        } else {
-            context.registerReceiver(usbReceiver, filter)
-        }
+        // Not exported on every API level: the only senders are the system (attach /
+        // detach) and our own permission PendingIntent. ContextCompat applies the flag on
+        // API 33+ and an equivalent signature-permission guard below that.
+        ContextCompat.registerReceiver(
+            context, usbReceiver, filter, ContextCompat.RECEIVER_NOT_EXPORTED
+        )
 
         refreshDevices()
     }
