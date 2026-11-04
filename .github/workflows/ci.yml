@@ -93,6 +93,10 @@ jobs:
       - name: Lint
         run: ./gradlew --no-daemon lintDebug
 
+      - name: Print lint report
+        if: failure()
+        run: cat app/build/intermediates/lint_intermediate_text_report/debug/lint-results-debug.txt || true
+
       - name: Upload test and lint reports
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
