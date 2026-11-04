@@ -1,0 +1,348 @@
+import test from 'node:test';
+import assert from 'node:assert/strict';
+
+import { DxoStreamDemux, DxoTransport, TransportError, encodeRpcRequest, METADATA_INIT_SIGNATURE } from '../DxoTransport.js';
+import DXOONE from '../dxo1usb.js';
+import { CameraManager } from '../CameraManager.js';
+import { FakeDxoOne, fakeUsbBackend, frameMessage, frameJpeg, makeJpeg, splitPackets } from './fakeDxoOne.mjs';
+
+// Silence the transport's diagnostic logging during tests.
+console.debug = () => {};
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function collectDemux() {
+    const out = { messages: [], frames: [], inits: 0, drops: [] };
+    const demux = new DxoStreamDemux({
+        onMessage: m => out.messages.push(m),
+        onFrame: f => out.frames.push(f),
+        onInitSignature: () => out.inits++,
+        onDrop: (reason) => out.drops.push(reason),
+    });
+    return { demux, out };
+}
+
+// ---------------------------------------------------------------------------
+// Demultiplexer (pure)
+// ---------------------------------------------------------------------------
+
+test('demux: RPC reply in a single packet', () => {
+    const { demux, out } = collectDemux();
+    demux.push(frameMessage({ id: 3, result: { ok: true } }));
+    assert.deepEqual(out.messages, [{ id: 3, result: { ok: true } }]);
+});
+
+test('demux: RPC reply split across packets', () => {
+    const { demux, out } = collectDemux();
+    const big = { id: 1, result: { blob: 'x'.repeat(1500) } };
+    splitPackets(frameMessage(big)).forEach(p => demux.push(p));
+    assert.deepEqual(out.messages, [big]);
+});
+
+test('demux: bare 32-byte header then body packet', () => {
+    const { demux, out } = collectDemux();
+    const framed = frameMessage({ id: 9, result: 1 });
+    demux.push(framed.slice(0, 32));
+    demux.push(framed.slice(32));
+    assert.deepEqual(out.messages, [{ id: 9, result: 1 }]);
+});
+
+test('demux: init signature is reported, not parsed', () => {
+    const { demux, out } = collectDemux();
+    demux.push(METADATA_INIT_SIGNATURE);
+    assert.equal(out.inits, 1);
+    assert.equal(out.messages.length, 0);
+});
+
+test('demux: unparseable JSON is dropped', () => {
+    const { demux, out } = collectDemux();
+    const framed = frameMessage({ id: 1 });
+    framed[33] = 0x00; framed[34] = 0x7D; // corrupt the body after the brace
+    demux.push(framed);
+    assert.equal(out.messages.length, 0);
+    assert.deepEqual(out.drops, ['rpc-parse']);
+});
+
+test('demux: JPEG split across packets keeps bytes of the next frame', () => {
+    const { demux, out } = collectDemux();
+    demux.setVideoEnabled(true);
+    const a = makeJpeg(1300, 1);
+    const b = makeJpeg(900, 2);
+    // Frame A's tail and frame B's head share a packet.
+    const stream = new Uint8Array([...frameJpeg(a), ...b]);
+    splitPackets(stream, 512).forEach(p => demux.push(p));
+    assert.equal(out.frames.length, 2);
+    assert.deepEqual(out.frames[0], a);
+    assert.deepEqual(out.frames[1], b);
+});
+
+test('demux: JPEG start marker straddling a packet boundary', () => {
+    const { demux, out } = collectDemux();
+    demux.setVideoEnabled(true);
+    const jpg = makeJpeg(700, 3);
+    const stream = new Uint8Array([0x01, 0x02, ...jpg]); // 2 junk bytes, then FFD8FF
+    demux.push(stream.slice(0, 3));      // ends with FF D8 split
+    demux.push(stream.slice(3));
+    assert.equal(out.frames.length, 1);
+    assert.deepEqual(out.frames[0], jpg);
+});
+
+test('demux: video bytes between two RPC replies do not corrupt either', () => {
+    const { demux, out } = collectDemux();
+    demux.setVideoEnabled(true);
+    const jpg = makeJpeg(1100, 4);
+    demux.push(frameMessage({ id: 1, result: 'a' }));
+    splitPackets(frameJpeg(jpg)).forEach(p => demux.push(p));
+    demux.push(frameMessage({ id: 2, result: 'b' }));
+    assert.deepEqual(out.messages, [{ id: 1, result: 'a' }, { id: 2, result: 'b' }]);
+    assert.deepEqual(out.frames, [jpg]);
+});
+
+test('demux: video is discarded while live view is off', () => {
+    const { demux, out } = collectDemux();
+    splitPackets(frameJpeg(makeJpeg(800))).forEach(p => demux.push(p));
+    assert.equal(out.frames.length, 0);
+});
+
+test('encodeRpcRequest refuses payloads the 16-bit length cannot describe', () => {
+    assert.throws(() => encodeRpcRequest(1, 'dxo_x', { p: 'x'.repeat(70000) }), RangeError);
+    const framed = encodeRpcRequest(1, 'dxo_x');
+    const len = framed[8] | (framed[9] << 8);
+    assert.equal(len, framed.length - 32);
+});
+
+// ---------------------------------------------------------------------------
+// Transport against the fake camera
+// ---------------------------------------------------------------------------
+
+async function openTransport(cam, opts) {
+    await cam.open();
+    const t = new DxoTransport(cam, 1, 2, opts);
+    await t.open({ handshakeTimeoutMs: 200 });
+    return t;
+}
+
+test('transport: handshake ACKs the camera init signature', async () => {
+    const cam = new FakeDxoOne();
+    const t = await openTransport(cam);
+    await sleep(5);
+    assert.equal(cam.acks, 2); // initial ACK + reply to the init signature
+    t.close(); cam.unplug();
+});
+
+test('transport: handshake does not hang when the camera sends no init signature', async () => {
+    const cam = new FakeDxoOne({ sendInitSignature: false });
+    const started = Date.now();
+    const t = await openTransport(cam);
+    assert.ok(Date.now() - started < 1000);
+    t.close(); cam.unplug();
+});
+
+test('transport: concurrent requests are serialized and matched by id', async () => {
+    const cam = new FakeDxoOne({
+        handlers: {
+            // Replies arrive in reverse speed order; serialization must keep them straight.
+            slow: (req, c) => c.later(30, () => c.queueMessage({ id: req.id, result: 'slow' })),
+            fast: (req, c) => c.queueMessage({ id: req.id, result: 'fast' }),
+        },
+    });
+    const t = await openTransport(cam);
+    const [a, b] = await Promise.all([t.request('slow'), t.request('fast')]);
+    assert.equal(a.result, 'slow');
+    assert.equal(b.result, 'fast');
+    t.close(); cam.unplug();
+});
+
+test('transport: notification before the reply is routed to events', async () => {
+    const events = [];
+    const cam = new FakeDxoOne({
+        handlers: {
+            dxo_setting_set: (req, c) => {
+                c.queueMessage({ jsonrpc: '2.0', method: 'dxo_setting_applied', params: req.params });
+                c.queueMessage({ jsonrpc: '2.0', id: req.id, result: { type: req.params.type } });
+            },
+        },
+    });
+    const t = await openTransport(cam, { onEvent: e => events.push(e) });
+    const res = await t.request('dxo_setting_set', { type: 'iso', param: 'iso800' });
+    assert.deepEqual(res.result, { type: 'iso' });
+    assert.equal(events.length, 1);
+    assert.equal(events[0].method, 'dxo_setting_applied');
+    t.close(); cam.unplug();
+});
+
+test('transport: a reply without an id is accepted for the in-flight request', async () => {
+    const cam = new FakeDxoOne({ handlers: { noid: (req, c) => c.queueMessage({ result: 'ok' }) } });
+    const t = await openTransport(cam);
+    assert.equal((await t.request('noid')).result, 'ok');
+    t.close(); cam.unplug();
+});
+
+test('transport: a timed-out request does not shift later replies', async () => {
+    const cam = new FakeDxoOne({
+        handlers: {
+            late: (req, c) => c.later(80, () => c.queueMessage({ id: req.id, result: 'late' })),
+        },
+    });
+    const t = await openTransport(cam);
+
+    await assert.rejects(t.request('late', undefined, { timeoutMs: 20 }),
+        e => e instanceof TransportError && e.code === 'timeout');
+
+    // The late reply (stale id) arrives while this request is in flight.
+    cam.handlers.next = (req, c) => c.later(100, () => c.queueMessage({ id: req.id, result: 'next' }));
+    const res = await t.request('next');
+    assert.equal(res.result, 'next');
+    t.close(); cam.unplug();
+});
+
+test('transport: unplugging fails the in-flight request instead of hanging', async () => {
+    let fatal = null;
+    const cam = new FakeDxoOne({ handlers: { never: () => {} } });
+    const t = await openTransport(cam, { onFatal: e => { fatal = e; } });
+    const pending = t.request('never', undefined, { timeoutMs: 5000 });
+    cam.unplug();
+    await assert.rejects(pending, e => e instanceof TransportError && e.code === 'closed');
+    assert.ok(fatal instanceof TransportError);
+    await assert.rejects(t.request('anything'), e => e.code === 'closed');
+});
+
+test('transport: commands during live view get their own replies and frames stay intact', async () => {
+    const frames = [];
+    const sent = [];
+    const cam = new FakeDxoOne({
+        handlers: {
+            dxo_camera_mode_switch: (req, c) => {
+                c.queueMessage({ id: req.id, result: 'view' });
+                // Stream frames; each frame is interleaved with whatever replies are queued.
+                let n = 0;
+                const tick = () => {
+                    if (n >= 6) return;
+                    const jpg = makeJpeg(1000 + n * 37, n);
+                    sent.push(jpg);
+                    c.queueJpeg(jpg);
+                    n++;
+                    c.later(5, tick);
+                };
+                tick();
+            },
+            dxo_photo_take: (req, c) => c.later(12, () => c.queueMessage({ id: req.id, result: 'photo' })),
+        },
+    });
+    const t = await openTransport(cam);
+    t.setFrameHandler(f => frames.push(f));
+    await t.request('dxo_camera_mode_switch', { param: 'view' });
+    const photo = await t.request('dxo_photo_take');
+    const status = await t.request('dxo_camera_status_get');
+    await sleep(60);
+
+    assert.equal(photo.result, 'photo');
+    assert.equal(status.result.method, 'dxo_camera_status_get');
+    assert.deepEqual(frames, sent);
+    t.close(); cam.unplug();
+});
+
+// ---------------------------------------------------------------------------
+// Public APIs on top of the transport
+// ---------------------------------------------------------------------------
+
+test('dxo1usb: open() sends no RPC by itself and getDigitalZoom is callable', async () => {
+    const cam = new FakeDxoOne();
+    const dxo = await DXOONE.open(fakeUsbBackend([cam]));
+    await sleep(10);
+    assert.equal(cam.requests.length, 0);
+    const zoom = await dxo.command.getDigitalZoom();
+    assert.equal(zoom.result.method, 'dxo_digital_zoom_get');
+    await dxo.close();
+});
+
+test('dxo1usb: setSettings resolves true on the confirmed reply and sends correct params', async () => {
+    const cam = new FakeDxoOne({
+        handlers: {
+            dxo_setting_set: (req, c) => {
+                c.queueMessage({ method: 'dxo_setting_applied', params: req.params });
+                c.queueMessage({ id: req.id, result: { type: req.params.type } });
+            },
+        },
+    });
+    const dxo = await DXOONE.open(fakeUsbBackend([cam]));
+    assert.equal(await dxo.command.setSettings.imageFormat.tnrOff(), true);
+    assert.equal(await dxo.command.setSettings.shootingMode.night(), true);
+    assert.deepEqual(cam.requests.map(r => r.params), [
+        { type: 'tnr', param: 'off' },
+        { type: 'shooting_mode', param: 'night' },
+    ]);
+    await dxo.close();
+});
+
+test('dxo1usb: setSettings resolves false on a JSON-RPC error', async () => {
+    const cam = new FakeDxoOne({
+        handlers: { dxo_setting_set: (req, c) => c.queueMessage({ id: req.id, error: { code: -1, message: 'nope' } }) },
+    });
+    const dxo = await DXOONE.open(fakeUsbBackend([cam]));
+    assert.equal(await dxo.command.setSettings.iso.iso800(), false);
+    await dxo.close();
+});
+
+test('CameraManager: captureAll reports a refused capture as an error', async () => {
+    const ok = new FakeDxoOne({ serialNumber: 'OK01' });
+    const bad = new FakeDxoOne({
+        serialNumber: 'BAD1',
+        handlers: { dxo_photo_take: (req, c) => c.queueMessage({ id: req.id, error: { message: 'card full' } }) },
+    });
+    const manager = new CameraManager({ usbBackend: fakeUsbBackend([ok, bad]) });
+    await manager.connectCamera();
+    await manager.connectCamera();
+
+    const results = await manager.captureAll();
+    const byId = Object.fromEntries(results.map(r => [r.cameraId, r]));
+    assert.equal(byId.OK01.status, 'success');
+    assert.equal(byId.BAD1.status, 'error');
+    assert.match(byId.BAD1.error, /card full/);
+    await manager.dispose();
+});
+
+test('CameraManager: unplug during capture fails that camera without hanging the others', async () => {
+    const ok = new FakeDxoOne({ serialNumber: 'OK02' });
+    const gone = new FakeDxoOne({ serialNumber: 'GONE', handlers: { dxo_photo_take: () => {} } });
+    const backend = fakeUsbBackend([ok, gone]);
+    const manager = new CameraManager({ usbBackend: backend });
+    await manager.connectCamera();
+    await manager.connectCamera();
+
+    const capture = manager.captureAll();
+    await sleep(10);
+    gone.unplug();
+    backend.emitDisconnect(gone);
+
+    const results = await capture;
+    const byId = Object.fromEntries(results.map(r => [r.cameraId, r]));
+    assert.equal(byId.OK02.status, 'success');
+    assert.equal(byId.GONE.status, 'error');
+    assert.equal(manager.cameraCount, 1);
+    await manager.dispose();
+});
+
+test('CameraDevice: live view start is idempotent and stop discards further frames', async () => {
+    const cam = new FakeDxoOne({ serialNumber: 'LV01' });
+    const manager = new CameraManager({ usbBackend: fakeUsbBackend([cam]) });
+    const camera = await manager.connectCamera();
+
+    const urls = [];
+    await camera.startLiveView(url => urls.push(url));
+    await camera.startLiveView(url => urls.push(url));
+    const modeSwitches = cam.requests.filter(r => r.method === 'dxo_camera_mode_switch').length;
+    assert.equal(modeSwitches, 1);
+    assert.equal(camera.isLiveViewActive, true);
+
+    cam.queueJpeg(makeJpeg(600));
+    await sleep(10);
+    assert.equal(urls.length, 1);
+
+    camera.stopLiveView();
+    cam.queueJpeg(makeJpeg(600));
+    await sleep(10);
+    assert.equal(urls.length, 1);
+    assert.equal(camera.isLiveViewActive, false);
+    await manager.dispose();
+});

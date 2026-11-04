@@ -227,12 +227,17 @@
             liveViewCameraId = cameraId;
             // Store the last revoke callback to prevent memory leaks
             let lastRevokeCallback = null;
-            camera.startLiveView((url, revokeCallback) => {
-                // Revoke previous URL to free memory
-                if (lastRevokeCallback) lastRevokeCallback();
-                lastRevokeCallback = revokeCallback;
-                if (url) $('#liveview').src = url;
-            });
+            try {
+                await camera.startLiveView((url, revokeCallback) => {
+                    // Revoke previous URL to free memory
+                    if (lastRevokeCallback) lastRevokeCallback();
+                    lastRevokeCallback = revokeCallback;
+                    if (url) $('#liveview').src = url;
+                });
+            } catch (error) {
+                liveViewCameraId = null;
+                log(`<div class="error">Live view failed: ${escapeHtml(error.message)}</div>`);
+            }
         }
 
         // Refresh UI
