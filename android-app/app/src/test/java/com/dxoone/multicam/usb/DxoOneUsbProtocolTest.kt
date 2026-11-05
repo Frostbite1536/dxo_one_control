@@ -221,7 +221,8 @@ class DxoOneUsbProtocolTest {
         val r = p.sendCommand(DxoOneMethods.CAMERA_STATUS_GET, timeoutMs = 2_000)
         assertTrue(r.isSuccess)
         assertEquals(listOf(cam.outEndpointAddress), cam.haltClears.toList())
-        // The halted write never reached the device, so the frame is on the wire exactly once.
+        // The halt fails the first write of the request (the ACK); after the clear it is retried
+        // and the request frame then goes out exactly once.
         val framesAfter = cam.writes.count { it.size > 32 && it[32] == '{'.code.toByte() }
         assertEquals(framesBefore + 1, framesAfter)
         p.stop()

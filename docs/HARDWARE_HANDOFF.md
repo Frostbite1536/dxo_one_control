@@ -2,7 +2,7 @@
 
 **Purpose:** continue this project on real DXO One cameras. Everything up to this point was done and verified **without hardware**, against scripted fake cameras, a JVM harness and CI. This document lists what has been verified and what hasn't, how to test on real devices, and the protocol questions that only a real camera can answer.
 
-**Status (2026-11-05):** `main` contains the audit (`docs/AUDIT-2026-11.md`) and three remediation PRs: Frostbite1536/dxo_one_control#5, #6 and #7. CI (JS tests; Android build, unit tests and lint) is green.
+**Status (2026-11-05):** the audit (`docs/AUDIT-2026-11.md`) and its remediation landed in three PRs: Frostbite1536/dxo_one_control#5, #6 and #7. This document was added in #7. CI (JS tests; Android build, unit tests and lint) gates every merge.
 
 ---
 
@@ -10,9 +10,9 @@
 
 | Area | Verified by | Not verified |
 |---|---|---|
-| JS transport (`DxoTransport.js`): framing, demux, id matching, timeouts, late replies, live-view reassembly, barrier | `npm test` (35 tests against `test/fakeDxoOne.mjs`), mutation-checked | Real camera byte layout and timing |
+| JS transport (`DxoTransport.js`): framing, demux, id matching, timeouts, late replies, live-view reassembly, barrier | `npm test` (37 tests against `test/fakeDxoOne.mjs`), mutation-checked | Real camera byte layout and timing |
 | Web pages (`usb.html`, `multi-camera.html`) | Chromium with a stubbed `navigator.usb`: load under the CSP, error paths | Real WebUSB pairing, permissions, unplug events |
-| Android transport (`DxoOneStreamDemux`, `DxoOneUsbProtocol` behind `UsbBulkIo`) | JUnit in CI: 27 demux tests, 11 protocol tests, 6 capture/barrier tests, barrier and result unit tests | Real `UsbDeviceConnection` behaviour, stalls, detach |
+| Android transport (`DxoOneStreamDemux`, `DxoOneUsbProtocol` behind `UsbBulkIo`) | JUnit in CI: 27 demux tests, 12 protocol tests (including stall recovery on both endpoints), 6 capture/barrier tests, barrier and result unit tests | Real `UsbDeviceConnection` behaviour, stalls, detach |
 | Android connection, service, UI | Builds, lints and passes unit tests in CI. A scratch JVM harness drives `CameraConnection` against stub Android classes | Running on a phone at all |
 | `resizeDNG.mjs` | Fake `sips` on Linux | Real macOS `sips` output, colour profile |
 
@@ -35,7 +35,7 @@
 - **JS logs:** the transport logs drops and stale replies with `console.debug`. Set the DevTools level to "Verbose".
 - **Android:**
   ```bash
-  adb logcat -s DxoOneUsbProtocol CameraConnection UsbDeviceManager CameraManagerService SyncCaptureEngine
+  adb logcat -s DxoOneUsbProtocol CameraConnection UsbDeviceManager CameraManagerService
   ```
 - **Raw reply dump:** to see every reply in full, add a temporary log line in `DxoStreamDemux._finishRpc` (JS) or `DxoOneStreamDemux.finishRpc` (Kotlin). Don't commit it.
 

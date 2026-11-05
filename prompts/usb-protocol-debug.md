@@ -230,7 +230,9 @@ function parseResponse(response) {
     return null;
   }
 
-  // Responses are JSON-RPC 2.0 messages (after the 32-byte header)
+  // Responses are JSON-RPC 2.0 messages (after the 32-byte header). This quick parse only
+  // works when the whole reply fits in this one packet; for real traffic feed packets to
+  // DxoStreamDemux (see "Corrupt Response" below), which reassembles multi-packet replies.
   let msg;
   try {
     msg = JSON.parse(new TextDecoder().decode(response.slice(32)).replace(/\0+$/, ''));
