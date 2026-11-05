@@ -115,7 +115,7 @@ const message = new Uint8Array(10);
 // ... only fill 5 bytes
 
 // ✅ Right: Length field matches the JSON payload (encodeRpcRequest computes it)
-const message = encodeRpcRequest(2, 'dxo_setting_set', { type: 'iso', param: '100' });
+const message = encodeRpcRequest(2, 'dxo_setting_set', { type: 'iso', param: 'iso100' });
 ```
 
 ---
