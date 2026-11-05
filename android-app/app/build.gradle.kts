@@ -52,6 +52,12 @@ android {
         kotlinCompilerExtensionVersion = "1.5.5"
     }
 
+    testOptions {
+        // android.util.Log (used by the USB transport) is a no-op in JVM unit tests
+        // instead of throwing "Method ... not mocked".
+        unitTests.isReturnDefaultValues = true
+    }
+
     packaging {
         resources {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"

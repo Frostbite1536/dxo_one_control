@@ -149,9 +149,7 @@ class CameraConnection(
             }
 
             val proto = DxoOneUsbProtocol(
-                connection = connection,
-                endpointIn = endpointIn,
-                endpointOut = endpointOut,
+                io = UsbDeviceConnectionBulkIo(connection, endpointIn, endpointOut),
                 name = id.takeLast(4),
                 onJpegFrame = { frame -> jpegFrames.trySend(frame) },
                 onFatalError = { error -> onTransportFailed(error) }

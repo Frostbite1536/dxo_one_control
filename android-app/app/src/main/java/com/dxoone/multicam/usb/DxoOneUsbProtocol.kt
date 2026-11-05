@@ -1,7 +1,5 @@
 package com.dxoone.multicam.usb
 
-import android.hardware.usb.UsbDeviceConnection
-import android.hardware.usb.UsbEndpoint
 import android.util.Log
 import com.google.gson.JsonObject
 import kotlinx.coroutines.CompletableDeferred
@@ -36,6 +34,9 @@ class DxoTransportClosedException(message: String, cause: Throwable? = null) :
  *
  * Callbacks are invoked on the reader thread and must not block.
  *
+ * All USB access goes through [io] (a [UsbDeviceConnectionBulkIo] in production), so the
+ * transport can be unit-tested against a fake device.
+ *
  * Ported from dxo1usb.js; the JS transport (DxoTransport.js) follows the same rules.
  *
  * Invariants:
@@ -44,9 +45,7 @@ class DxoTransportClosedException(message: String, cause: Throwable? = null) :
  * - INV-CONS-003: Error state recovery
  */
 class DxoOneUsbProtocol(
-    private val connection: UsbDeviceConnection,
-    private val endpointIn: UsbEndpoint,
-    private val endpointOut: UsbEndpoint,
+    private val io: UsbBulkIo,
     private val name: String = "camera",
     private val onJpegFrame: (ByteArray) -> Unit = {},
     private val onNotification: (method: String, message: JsonObject) -> Unit = { _, _ -> },
@@ -247,9 +246,7 @@ class DxoOneUsbProtocol(
         try {
             while (running) {
                 val started = System.nanoTime()
-                val n = connection.bulkTransfer(
-                    endpointIn, buffer, buffer.size, DxoOneConstants.READ_POLL_TIMEOUT_MS
-                )
+                val n = io.bulkIn(buffer, buffer.size, DxoOneConstants.READ_POLL_TIMEOUT_MS)
                 if (!running) break
                 when {
                     n > 0 -> {
@@ -270,7 +267,7 @@ class DxoOneUsbProtocol(
                             // gone device fails the control transfer and keeps counting.
                             if (fastFailures == DxoOneConstants.STALL_CLEAR_AFTER_FAILURES &&
                                 haltClears < DxoOneConstants.MAX_HALT_CLEARS &&
-                                clearHalt(endpointIn)
+                                clearHalt(io.inEndpointAddress)
                             ) {
                                 haltClears++
                                 Log.w(TAG, "[$name] bulk-IN halted; cleared (attempt $haltClears)")
@@ -336,14 +333,14 @@ class DxoOneUsbProtocol(
      */
     private fun writeFully(data: ByteArray) {
         val started = System.nanoTime()
-        var n = connection.bulkTransfer(endpointOut, data, data.size, DxoOneConstants.USB_TIMEOUT_MS)
+        var n = io.bulkOut(data, data.size, DxoOneConstants.USB_TIMEOUT_MS)
         val elapsedMs = (System.nanoTime() - started) / 1_000_000
         // Only an immediate failure looks like a halt. After a timeout part of a multi-packet
         // frame may already have gone out, and clearing an endpoint that isn't halted resets
         // its data toggle, so don't clear-and-resend then.
-        if (n < 0 && elapsedMs < DxoOneConstants.DEAD_DEVICE_FAST_FAIL_MS && clearHalt(endpointOut)) {
+        if (n < 0 && elapsedMs < DxoOneConstants.DEAD_DEVICE_FAST_FAIL_MS && clearHalt(io.outEndpointAddress)) {
             Log.w(TAG, "[$name] bulk-OUT halted; cleared, retrying")
-            n = connection.bulkTransfer(endpointOut, data, data.size, DxoOneConstants.USB_TIMEOUT_MS)
+            n = io.bulkOut(data, data.size, DxoOneConstants.USB_TIMEOUT_MS)
         }
         if (n != data.size) {
             throw IOException("bulk-OUT wrote $n of ${data.size} bytes")
@@ -351,18 +348,18 @@ class DxoOneUsbProtocol(
     }
 
     /**
-     * Standard CLEAR_FEATURE(ENDPOINT_HALT) request to [endpoint] (USB 2.0 §9.4.1). Android
+     * Standard CLEAR_FEATURE(ENDPOINT_HALT) request to [endpointAddress] (USB 2.0 §9.4.1). Android
      * has no public clearHalt(); the kernel's usbfs resets the host-side endpoint state when
      * this request succeeds.
      *
      * @return true if the device accepted the request
      */
-    private fun clearHalt(endpoint: UsbEndpoint): Boolean {
-        val result = connection.controlTransfer(
+    private fun clearHalt(endpointAddress: Int): Boolean {
+        val result = io.controlTransfer(
             USB_RECIP_ENDPOINT_OUT, // host-to-device | standard | endpoint
             USB_REQ_CLEAR_FEATURE,
             USB_FEATURE_ENDPOINT_HALT,
-            endpoint.address,
+            endpointAddress,
             null,
             0,
             DxoOneConstants.USB_TIMEOUT_MS
