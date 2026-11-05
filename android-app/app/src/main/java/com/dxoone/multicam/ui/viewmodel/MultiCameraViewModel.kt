@@ -17,6 +17,7 @@ import com.dxoone.multicam.usb.UsbDeviceManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -25,6 +26,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.flatMapLatest
 import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import javax.inject.Inject
@@ -48,6 +50,12 @@ class MultiCameraViewModel @Inject constructor(
     val uiState: StateFlow<MultiCameraUiState> = _uiState.asStateFlow()
 
     private val captureEngine = SyncCaptureEngine()
+
+    // One-shot messages (capture summaries) for the snackbar. A channel, not state: each
+    // message is delivered once, buffered while no one is collecting, and never replayed
+    // when the screen is recomposed or navigated back to.
+    private val _captureMessages = Channel<String>(Channel.BUFFERED)
+    val captureMessages: Flow<String> = _captureMessages.receiveAsFlow()
 
     // Available USB devices (not yet connected)
     private var availableDevices: List<UsbDevice> = emptyList()
@@ -253,6 +261,7 @@ class MultiCameraViewModel @Inject constructor(
                         lastCaptureResult = results
                     )
                 }
+                _captureMessages.trySend(results.summaryText())
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

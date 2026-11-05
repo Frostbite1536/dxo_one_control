@@ -42,8 +42,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.dxoone.multicam.domain.model.CameraEvent
 import com.dxoone.multicam.service.CaptureMode
 import com.dxoone.multicam.ui.components.CameraPreviewCard
@@ -77,10 +80,15 @@ fun MainScreen(
         }
     }
 
-    // Show capture result
-    LaunchedEffect(uiState.lastCaptureResult) {
-        uiState.lastCaptureResult?.let { result ->
-            snackbarHostState.showSnackbar(result.summaryText())
+    // Show each capture summary once. These are one-shot events, not state, so returning to
+    // this screen doesn't replay the last one; one that arrives while the screen is stopped
+    // waits until it is visible again.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.captureMessages.collect { message ->
+                snackbarHostState.showSnackbar(message)
+            }
         }
     }
 
