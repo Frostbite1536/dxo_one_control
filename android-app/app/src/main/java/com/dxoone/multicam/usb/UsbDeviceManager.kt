@@ -260,9 +260,16 @@ class UsbDeviceManager @Inject constructor(
         // Create camera connection. It locates and claims its interfaces itself
         // (device.getInterface(i) is a descriptor index, not an interface number) and
         // closes the connection if initialization fails.
+        // INV-MULTI-001: two cameras without a serial would share the fallback id.
+        val baseId = CameraConnection.defaultId(device)
+        var cameraId = baseId
+        var n = 2
+        while (_connectedCameras.value.containsKey(cameraId)) cameraId = "$baseId#${n++}"
+
         val cameraConnection = CameraConnection(
             device = device,
-            connection = connection
+            connection = connection,
+            idOverride = cameraId
         )
 
         // Initialize

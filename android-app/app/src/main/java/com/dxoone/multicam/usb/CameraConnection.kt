@@ -23,7 +23,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -41,10 +40,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class CameraConnection(
     val device: UsbDevice,
-    private val connection: UsbDeviceConnection
+    private val connection: UsbDeviceConnection,
+    /** Overrides the default id (UsbDeviceManager uses it to keep fallback ids unique). */
+    idOverride: String? = null
 ) {
     // Unique camera identification (INV-MULTI-001)
-    val id: String = device.serialNumber ?: UUID.randomUUID().toString()
+    // INV-MULTI-001: stable across reconnects - the serial number, or vendor/product id
+    // when the camera reports no serial (made unique by UsbDeviceManager if needed).
+    val id: String = idOverride ?: defaultId(device)
     val serialNumber: String? = device.serialNumber
 
     // User-assignable nickname (observable so renames reach the UI)
@@ -636,6 +639,10 @@ class CameraConnection(
 
     companion object {
         private const val TAG = "CameraConnection"
+
+        fun defaultId(device: UsbDevice): String =
+            device.serialNumber?.takeIf { it.isNotBlank() }
+                ?: "%04x-%04x".format(device.vendorId, device.productId)
     }
 }
 

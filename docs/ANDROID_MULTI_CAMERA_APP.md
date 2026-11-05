@@ -12,7 +12,7 @@
 | USB protocol (reader thread, serialized RPC, timeouts) | Done | `usb/DxoOneUsbProtocol.kt`, `usb/JsonRpcMessage.kt` (incl. `DxoOneMethods` allowlist) |
 | Camera connection (`ConnectionState`, live view, status) | Done | `usb/CameraConnection.kt` |
 | Device manager (process-wide, permission flow, max 4) | Done | `usb/UsbDeviceManager.kt` |
-| Sync capture engine (parallel / sequential) | Done; sync variance is not a true shutter-time measure | `service/SyncCaptureEngine.kt` |
+| Sync capture engine (parallel / sequential) | Done; cameras released from a barrier, reports host-side trigger spread (not shutter time) | `service/SyncCaptureEngine.kt`, `usb/CaptureBarrier.kt` |
 | Foreground service | Done | `service/CameraManagerService.kt` |
 | Settings applier (checks each result; used on connect) | Done | `service/CameraSettingsApplier.kt` |
 | Settings persistence | Done (DataStore) | `data/SettingsPreferences.kt` |
@@ -531,7 +531,7 @@ Not present (were in the original plan): `UsbModule.kt`, `data/repository/`, Roo
 
 ### Kotlin Implementation
 
-> Illustrative sketch of the original plan. The real engine is `service/SyncCaptureEngine.kt`: it takes the camera list as an argument (`captureAllParallel` / `captureAllSequential`), calls `CameraConnection.takePhoto()`, and returns `MultiCaptureResult`. Its `syncVarianceMs` is the spread of per-camera command start times, not of shutter times.
+> Illustrative sketch of the original plan. The real engine is `service/SyncCaptureEngine.kt`: it takes the camera list as an argument (`captureAllParallel` / `captureAllSequential`), calls `CameraConnection.takePhoto()`, and returns `MultiCaptureResult`. It releases all cameras from a `CaptureBarrier` and reports `triggerSpreadNanos`: the spread of the times each camera's `dxo_photo_take` finished writing to USB (host-side), not of shutter times.
 
 ```kotlin
 class SyncCaptureEngine(
