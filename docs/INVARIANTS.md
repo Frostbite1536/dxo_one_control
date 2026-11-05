@@ -592,6 +592,7 @@ async captureAll() {
 **Enforcement (as implemented)**:
 - JS: `captureAll()` logs total capture time and mode; each result carries a `timestamp`. `multi-camera.html` labels the modes "Parallel (Best Effort)" / "Sequential (Reliable)".
 - Android: `SyncCaptureEngine` holds every camera at a `CaptureBarrier` (bounded wait) so their `dxo_photo_take` writes start together, records when each write finished (`CaptureResult.triggerWrittenAtNanos`), and reports `MultiCaptureResult.triggerSpreadNanos` (max - min) as "trigger spread (host-side)" in the UI and notification.
+- Web: `CameraManager` parallel capture uses the same `CaptureBarrier` rules (shared deadline, `barrierTimeoutMs`, default 300 ms) via `DxoTransport.request(..., { beforeWrite, onWritten })`, records `triggeredAt` per camera and reports the host-side trigger spread to `onCaptureComplete(results, totalTime, spreadMs)`; `multi-camera.html` shows it. Tests: `test/transport.test.mjs`.
 - **The "~50 ms" figure is unmeasured** on either platform (nothing was run against real hardware). The host-side trigger spread is not the shutter spread: the camera's own latency after receiving the command is unknown.
 
 **Not yet enforced** (intent kept; nothing in the code does this):

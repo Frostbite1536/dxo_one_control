@@ -67,7 +67,7 @@ For each code change, systematically check **all 15 invariants**:
 - [ ] No plain Array or other types used for USB data?
 
 **Red Flags**:
-- ❌ `const message = [0x01, 0x02]` (plain Array)
+- ❌ `const message = [0x01, 0x02]` (plain Array instead of `encodeRpcRequest(...)` output)
 - ❌ `message.length = 5` after creation (length mismatch)
 - ❌ Missing length validation
 
@@ -367,11 +367,11 @@ Added new battery status feature to dxo1usb.js
 
 ### ✅ Invariants Maintained (9)
 
-**INV-DATA-001**: ✅ Battery command uses `new Uint8Array([0x15])`
+**INV-DATA-001**: ✅ Battery request built with `encodeRpcRequest(id, 'dxo_camera_status_get')` (returns a Uint8Array)
 **INV-DATA-003**: ✅ Checks connection state before sending
 **INV-SEC-001**: ✅ Uses existing device connection (already verified)
 **INV-SEC-002**: ✅ Requires prior connection (user permission)
-**INV-SEC-003**: ✅ Battery command (0x15) added to whitelist
+**INV-SEC-003**: ✅ Battery method (`dxo_camera_status_get`) added to whitelist
 **INV-CONS-001**: ✅ Uses existing WebUSB check
 **INV-CONS-003**: ✅ Error handler provides retry or reconnect action
 **INV-API-001**: ✅ New export added, no existing exports changed
@@ -394,7 +394,7 @@ No invariant violations detected.
 - **ID**: INV-DATA-004
 - **Rule**: Battery response must be 0-100 or throw error
 - **Rationale**: Invalid values could break UI or mislead users
-- **Enforcement**: Validate response byte is <= 100
+- **Enforcement**: Validate the battery field of the `dxo_camera_status_get` reply (`result.battery` in the JS client) is a number in 0–100
 - **Category**: Data Integrity
 
 ### Decision: ⚠️ Discuss

@@ -396,10 +396,15 @@ export class DxoTransport {
      * @param {Object} [params]
      * @param {Object} [options]
      * @param {number} [options.timeoutMs]
+     * @param {Function} [options.beforeWrite] - awaited when it is this request's turn,
+     *   just before its frame is written (multi-camera capture holds every camera at a
+     *   barrier here). Must be bounded: later requests to this camera wait behind it.
+     * @param {Function} [options.onWritten] - called with performance.now() right after
+     *   the frame has been written, before the reply arrives. Not called if the write fails.
      * @returns {Promise<Object>}
      */
-    request(method, params, { timeoutMs } = {}) {
-        const run = () => this._doRequest(method, params, timeoutMs);
+    request(method, params, { timeoutMs, beforeWrite, onWritten } = {}) {
+        const run = () => this._doRequest(method, params, timeoutMs, beforeWrite, onWritten);
         const result = this._requestChain.then(run, run);
         this._requestChain = result.catch(() => {});
         return result;
@@ -430,9 +435,15 @@ export class DxoTransport {
         }
     }
 
-    async _doRequest(method, params, timeoutMs) {
+    async _doRequest(method, params, timeoutMs, beforeWrite, onWritten) {
         if (this._closed) {
             throw new TransportError(`${this.name} is not connected`, 'closed');
+        }
+        if (beforeWrite) {
+            await beforeWrite();
+            if (this._closed) {
+                throw new TransportError(`${this.name} is not connected`, 'closed');
+            }
         }
 
         const id = this._seq++;
@@ -463,6 +474,14 @@ export class DxoTransport {
 
             this._write(METADATA_INIT_RESPONSE_SIGNATURE)
                 .then(() => this._write(frame))
+                .then(() => {
+                    if (!onWritten) return;
+                    try {
+                        onWritten(performance.now());
+                    } catch (error) {
+                        console.error(`[${this.name}] onWritten callback threw:`, error);
+                    }
+                })
                 .catch(err => entry.reject(err));
         });
     }

@@ -44,22 +44,15 @@ You are conducting a performance review of **dxo1control**, a tool for controlli
 
 **Example Issue**:
 ```javascript
-// Bad: Sequential operations
-async function getCameraInfo() {
-  const battery = await getBattery();    // USB transfer 1
-  const model = await getModel();        // USB transfer 2
-  const firmware = await getFirmware();  // USB transfer 3
-  return { battery, model, firmware };
-}
+// Bad: polling status on a timer while live view is streaming (each request
+// competes with video on the same bulk-IN endpoint)
+setInterval(() => camera.getStatus(), 500);
 
-// Better: Batch if protocol allows
-async function getCameraInfo() {
-  const response = await getBatchedInfo([
-    COMMANDS.BATTERY,
-    COMMANDS.MODEL,
-    COMMANDS.FIRMWARE
-  ]);
-  return parseResponse(response);
+// Better: one dxo_camera_status_get returns the status fields (including battery)
+// in a single reply; fetch it on demand and cache it
+async function getCameraInfo(camera) {
+  const status = await camera.transferOutRPC('dxo_camera_status_get');
+  return status.result;
 }
 ```
 
@@ -172,22 +165,22 @@ async function connectCamera() {
 ```javascript
 // Bad: Linear search in array
 const COMMANDS = [
-  { id: 0x01, name: 'CAPTURE' },
-  { id: 0x02, name: 'STATUS' },
+  { method: 'dxo_photo_take', name: 'CAPTURE' },
+  { method: 'dxo_camera_status_get', name: 'STATUS' },
   // ... 50 more
 ];
-function getCommand(id) {
-  return COMMANDS.find(cmd => cmd.id === id);  // O(n)
+function getCommand(method) {
+  return COMMANDS.find(cmd => cmd.method === method);  // O(n)
 }
 
 // Better: Map for O(1) lookup
 const COMMANDS = new Map([
-  [0x01, 'CAPTURE'],
-  [0x02, 'STATUS'],
+  ['dxo_photo_take', 'CAPTURE'],
+  ['dxo_camera_status_get', 'STATUS'],
   // ...
 ]);
-function getCommand(id) {
-  return COMMANDS.get(id);  // O(1)
+function getCommand(method) {
+  return COMMANDS.get(method);  // O(1)
 }
 ```
 

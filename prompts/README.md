@@ -126,7 +126,7 @@ Using: feature-implementation.md
 Task: Add support for getting camera battery status
 
 Context:
-- Camera exposes battery status via USB command 0x15
+- Camera exposes battery status via the `dxo_camera_status_get` JSON-RPC method
 - Response is single byte: 0-100 representing percentage
 - Should update UI in usb.html to display battery level
 - Must follow INV-SEC-003 (command validation)

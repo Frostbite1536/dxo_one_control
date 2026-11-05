@@ -23,7 +23,7 @@ You are debugging USB protocol communication between **dxo1control** and the DXO
 - **Lightning connection**: Protocol unknown, not supported
 - **WebUSB API**: Browser standard for USB device communication
 - **Connection type**: USB 2.0
-- **Data format**: Binary messages (Uint8Array)
+- **Data format**: JSON-RPC 2.0 requests (`dxo_*` methods) framed by a 32-byte header and sent over USB bulk transfers (Uint8Array; see `encodeRpcRequest` in DxoTransport.js)
 
 **Community Resources**:
 - https://github.com/rickdeck/DxO-One - microUSB protocol
@@ -83,11 +83,11 @@ const device = await navigator.usb.requestDevice({ filters });
 
 ```javascript
 // Log outgoing message
-function sendCommand(commandType, payload = []) {
-  const message = new Uint8Array([commandType, ...payload]);
+function sendCommand(method, params) {
+  const message = encodeRpcRequest(nextId++, method, params);
 
   console.log('Sending command:');
-  console.log('  Type:', '0x' + commandType.toString(16));
+  console.log('  Method:', method, 'params:', JSON.stringify(params));
   console.log('  Length:', message.length);
   console.log('  Bytes:', Array.from(message).map(b => '0x' + b.toString(16).padStart(2, '0')));
   console.log('  Raw:', message);
@@ -104,18 +104,18 @@ function sendCommand(commandType, payload = []) {
 
 **Common Message Format Errors**:
 ```javascript
-// ❌ Wrong: Plain array
+// ❌ Wrong: Plain array / hand-rolled bytes instead of a framed JSON-RPC request
 const message = [0x01, 0x02];
 
-// ✅ Right: Uint8Array
-const message = new Uint8Array([0x01, 0x02]);
+// ✅ Right: Uint8Array built by encodeRpcRequest (32-byte header + JSON payload)
+const message = encodeRpcRequest(1, 'dxo_camera_status_get');
 
 // ❌ Wrong: Length mismatch
 const message = new Uint8Array(10);
 // ... only fill 5 bytes
 
-// ✅ Right: Length matches content
-const message = new Uint8Array([0x01, 0x02, 0x03, 0x04, 0x05]);
+// ✅ Right: Length field matches the JSON payload (encodeRpcRequest computes it)
+const message = encodeRpcRequest(2, 'dxo_setting_set', { type: 'iso', param: 'iso100' });
 ```
 
 ---
@@ -230,21 +230,23 @@ function parseResponse(response) {
     return null;
   }
 
-  const statusByte = response[0];
-  console.log('  Status byte:', '0x' + statusByte.toString(16));
-
-  // Parse based on known protocol
-  switch (statusByte) {
-    case 0x00:
-      console.log('  ✅ Success');
-      return { status: 'ok', data: response.slice(1) };
-    case 0x01:
-      console.log('  ❌ Error');
-      return { status: 'error', code: response[1] };
-    default:
-      console.log('  ⚠️  Unknown status');
-      return { status: 'unknown', raw: response };
+  // Responses are JSON-RPC 2.0 messages (after the 32-byte header). This quick parse only
+  // works when the whole reply fits in this one packet; for real traffic feed packets to
+  // DxoStreamDemux (see "Corrupt Response" below), which reassembles multi-packet replies.
+  let msg;
+  try {
+    msg = JSON.parse(new TextDecoder().decode(response.slice(32)).replace(/\0+$/, ''));
+  } catch (e) {
+    console.log('  ⚠️  Unparseable response');
+    return { status: 'unknown', raw: response };
   }
+
+  if (msg.error) {
+    console.log('  ❌ Error', msg.error);
+    return { status: 'error', code: msg.error.code, message: msg.error.message };
+  }
+  console.log('  ✅ Success');
+  return { status: 'ok', data: msg.result };
 }
 ```
 
@@ -328,7 +330,9 @@ console.log('All available devices:', allDevices);
 // Claim interface before transfer
 await device.open();
 await device.selectConfiguration(1);
-await device.claimInterface(0);  // Usually interface 0
+await device.claimInterface(device.configuration.interfaces[0].interfaceNumber);
+await device.claimInterface(device.configuration.interfaces[1].interfaceNumber);
+await device.selectAlternateInterface(1, 1);  // as dxo1usb.js / CameraDevice.js do
 
 // Then transfer
 await device.transferOut(endpointOut, message);
@@ -348,11 +352,12 @@ await device.transferOut(endpointOut, message);
 
 **Solution**:
 ```javascript
-// Ensure camera is awake
-await sendWakeupCommand();
+// Requests time out via DxoTransport (5 s default, 40 s for dxo_photo_take).
+// Pass a longer timeout for a slow command instead of waiting forever:
+const response = await transport.request('dxo_all_settings_get', undefined, { timeoutMs: 10000 });
 
-// Increase timeout
-const response = await receiveUSBWithTimeout(10000);  // 10s timeout
+// Check the handshake: the camera sends an init signature after open and expects an
+// ACK (DxoTransport.open does this). Log drops with DevTools at "Verbose" level.
 ```
 
 ---
@@ -369,14 +374,16 @@ const response = await receiveUSBWithTimeout(10000);  // 10s timeout
 
 **Solution**:
 ```javascript
-// Read full response size
-const EXPECTED_SIZE = 64;  // Adjust based on protocol
-const result = await device.transferIn(endpointIn, EXPECTED_SIZE);
-
-// Verify size matches
-if (result.data.byteLength !== EXPECTED_SIZE) {
-  console.warn('Partial response received');
-}
+// Don't assume one transferIn holds one reply. Reads are 512-byte packets
+// (MAX_PACKETSIZE); short reads are normal; a reply can span several packets and
+// can be preceded by the init signature or by live-view JPEG data. Feed every
+// packet to the demultiplexer, which reassembles replies by their length field:
+const demux = new DxoStreamDemux({
+  onMessage: msg => console.log('reply', msg),
+  onDrop: (reason, detail) => console.warn('dropped', reason, detail),
+});
+const result = await device.transferIn(endpointIn, MAX_PACKETSIZE);
+demux.push(new Uint8Array(result.data.buffer, result.data.byteOffset, result.data.byteLength));
 ```
 
 ---
@@ -391,18 +398,18 @@ When you discover protocol details, document them:
 /**
  * DXO One USB Protocol - Command Reference
  *
- * Command Format:
- *   Byte 0: Command type
- *   Byte 1-N: Parameters (command-specific)
+ * Request Format:
+ *   32-byte header (incl. 16-bit LE payload length) + NUL-terminated JSON-RPC 2.0:
+ *   {"jsonrpc":"2.0","id":N,"method":"dxo_...","params":{...}}
  *
  * Response Format:
- *   Byte 0: Status (0x00 = success, 0x01 = error)
- *   Byte 1-N: Response data (command-specific)
+ *   Same framing; JSON-RPC 2.0 object with "result" or "error".
  *
- * Known Commands:
- *   0x01: Get device status
- *   0x10: Capture image
- *   0x15: Get battery level
+ * Known Methods:
+ *   dxo_camera_status_get: Get device status (includes battery)
+ *   dxo_photo_take: Capture image
+ *   dxo_setting_set {type, param}: Change a setting
+ *   dxo_camera_mode_switch {param: 'view'}: Switch camera mode
  *   // Add more as discovered
  */
 ```

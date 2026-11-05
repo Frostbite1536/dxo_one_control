@@ -67,15 +67,20 @@ function updateCameraList(cameras) {
 /**
  * Shows capture results after multi-camera capture
  */
-function showCaptureResults(results, totalTime) {
+function showCaptureResults(results, totalTime, triggerSpreadMs = null) {
     const succeeded = results.filter(r => r.status === 'success').length;
     const failed = results.filter(r => r.status === 'error').length;
+    // Host-side only: when each command finished writing to USB, not when shutters fired.
+    const spread = typeof triggerSpreadMs === 'number'
+        ? `<span class="trigger-spread">trigger spread (host-side): ${triggerSpreadMs.toFixed(2)} ms</span>`
+        : '';
 
     let html = `<div class="capture-results">
         <h4>Capture Complete (${totalTime.toFixed(0)}ms)</h4>
         <div class="capture-summary">
             <span class="success-count">${succeeded} succeeded</span>
             ${failed > 0 ? `<span class="fail-count">${failed} failed</span>` : ''}
+            ${spread}
         </div>
         <ul class="capture-details">
     `;

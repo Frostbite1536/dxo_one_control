@@ -100,10 +100,10 @@ async function newCameraCommand() {
   }
 
   // Validate command (INV-SEC-003)
-  const cmdType = COMMANDS.NEW_COMMAND; // Must be in whitelist
+  const method = METHODS.NEW_METHOD; // Must be in whitelist (a real dxo_* method name)
 
   // Create message (INV-DATA-001)
-  const message = new Uint8Array([cmdType, /* payload */]);
+  const message = encodeRpcRequest(nextId++, method /* , params */);
 
   // Send and handle errors (INV-CONS-003)
   try {
@@ -350,9 +350,9 @@ Before marking feature complete:
 1. Define command constant:
    ```javascript
    const COMMANDS = {
-     CAPTURE: 0x01,
-     GET_STATUS: 0x02,
-     NEW_COMMAND: 0x03  // Add to whitelist
+     CAPTURE: 'dxo_photo_take',
+     GET_STATUS: 'dxo_camera_status_get',
+     NEW_COMMAND: 'dxo_new_method'  // Add to whitelist
    };
    ```
 

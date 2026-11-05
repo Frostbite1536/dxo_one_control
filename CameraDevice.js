@@ -176,10 +176,13 @@ export class CameraDevice {
     /**
      * Takes a photo with this camera
      *
+     * @param {Object} [hooks] - passed to DxoTransport.request (see there)
+     * @param {Function} [hooks.beforeWrite] - awaited just before the command is written
+     * @param {Function} [hooks.onWritten] - receives performance.now() after the write
      * @returns {Promise<Object>} Photo capture result
      */
-    async takePhoto() {
-        const response = await this.transferOutRPC('dxo_photo_take');
+    async takePhoto({ beforeWrite, onWritten } = {}) {
+        const response = await this.transferOutRPC('dxo_photo_take', undefined, { beforeWrite, onWritten });
         // INV-MULTI-003: a camera that refused the capture must not count as success
         if (response?.error) {
             const detail = response.error.message || JSON.stringify(response.error);

@@ -136,31 +136,31 @@ async function processImage(file) {
 // Before: Duplication
 async function getBattery() {
   if (!isConnected) throw new Error('Not connected');
-  const msg = new Uint8Array([0x15]);
+  const msg = encodeRpcRequest(nextId++, 'dxo_camera_status_get');
   return await sendUSB(msg);
 }
 
 async function getModel() {
   if (!isConnected) throw new Error('Not connected');
-  const msg = new Uint8Array([0x16]);
+  const msg = encodeRpcRequest(nextId++, 'dxo_all_settings_get');
   return await sendUSB(msg);
 }
 
 // After: Extract common pattern
-async function sendCameraCommand(commandByte) {
+async function sendCameraCommand(method, params) {
   if (!isConnected) {
     throw new Error('Camera not connected');
   }
-  const message = new Uint8Array([commandByte]);
+  const message = encodeRpcRequest(nextId++, method, params);
   return await sendUSB(message);
 }
 
 async function getBattery() {
-  return await sendCameraCommand(0x15);
+  return await sendCameraCommand('dxo_camera_status_get');
 }
 
 async function getModel() {
-  return await sendCameraCommand(0x16);
+  return await sendCameraCommand('dxo_all_settings_get');
 }
 ```
 
@@ -177,20 +177,20 @@ async function getModel() {
 ```javascript
 // Before: Array for lookup
 const commands = [
-  { id: 0x01, name: 'CAPTURE' },
-  { id: 0x02, name: 'STATUS' }
+  { method: 'dxo_photo_take', name: 'CAPTURE' },
+  { method: 'dxo_camera_status_get', name: 'STATUS' }
 ];
-function findCommand(id) {
-  return commands.find(cmd => cmd.id === id);
+function findCommand(method) {
+  return commands.find(cmd => cmd.method === method);
 }
 
 // After: Map for O(1) lookup
 const COMMANDS = new Map([
-  [0x01, 'CAPTURE'],
-  [0x02, 'STATUS']
+  ['dxo_photo_take', 'CAPTURE'],
+  ['dxo_camera_status_get', 'STATUS']
 ]);
-function getCommandName(id) {
-  return COMMANDS.get(id);
+function getCommandName(method) {
+  return COMMANDS.get(method);
 }
 ```
 
@@ -279,20 +279,13 @@ function getData() {
 
 **Clear message construction**:
 ```javascript
-// Before: Magic numbers
-const msg = new Uint8Array([0x01, 0x00, 0x05, 0xFF]);
+// Before: Magic strings and hand-built frames
+const msg = encodeRpcRequest(3, 'dxo_camera_mode_switch', { param: 'view' });
 
 // After: Named constants
-const COMMAND_TYPE = 0x01;
-const HEADER = 0x00;
-const LENGTH = 0x05;
-const TERMINATOR = 0xFF;
-const message = new Uint8Array([
-  COMMAND_TYPE,
-  HEADER,
-  LENGTH,
-  TERMINATOR
-]);
+const METHOD_MODE_SWITCH = 'dxo_camera_mode_switch';
+const MODE_VIEW = 'view';
+const message = encodeRpcRequest(nextId++, METHOD_MODE_SWITCH, { param: MODE_VIEW });
 ```
 
 **Clear state management**:
@@ -453,10 +446,9 @@ const isConnected = connectionState.isConnected;
 ```javascript
 function proc(d) {
   if(d){
-    if(d.length>0){
-      let r=d[0];
-      if(r===0x01){return 'ok';}
-      else if(r===0x02){return 'err';}
+    if(d.jsonrpc==='2.0'){
+      if(d.error){return 'err';}
+      else if(d.result!==undefined){return 'ok';}
       else{return 'unk';}
     }
   }
@@ -470,27 +462,21 @@ function proc(d) {
 /**
  * Processes camera response and returns status.
  *
- * @param {Uint8Array} responseData - Response from camera
+ * @param {Object} response - Parsed JSON-RPC 2.0 response from camera
  * @returns {string|null} Status: 'ok', 'error', 'unknown', or null
  */
-function parseCameraResponse(responseData) {
-  // Validate response exists and has data
-  if (!responseData || responseData.length === 0) {
+function parseCameraResponse(response) {
+  // Validate response exists
+  if (!response || response.jsonrpc !== '2.0') {
     return null;
   }
 
-  // Parse status byte
-  const statusByte = responseData[0];
-
-  const STATUS_OK = 0x01;
-  const STATUS_ERROR = 0x02;
-
-  if (statusByte === STATUS_OK) {
-    return 'ok';
+  if (response.error) {
+    return 'error';
   }
 
-  if (statusByte === STATUS_ERROR) {
-    return 'error';
+  if (response.result !== undefined) {
+    return 'ok';
   }
 
   return 'unknown';
@@ -498,8 +484,8 @@ function parseCameraResponse(responseData) {
 ```
 
 ### What Changed
-- **Named constants**: 0x01/0x02 → STATUS_OK/STATUS_ERROR
-- **Descriptive names**: `d`/`r` → `responseData`/`statusByte`
+- **Explicit protocol fields**: `result`/`error` checked by name, not magic values
+- **Descriptive names**: `d` → `response`
 - **Early validation**: Check for null/empty upfront
 - **Clearer structure**: One condition per if block
 - **JSDoc comment**: Documents parameters and return value

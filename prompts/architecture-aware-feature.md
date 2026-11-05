@@ -170,10 +170,10 @@ async function newCameraCommand() {
   }
 
   // Validate command (INV-SEC-003)
-  const commandType = COMMANDS.NEW_COMMAND;
+  const method = COMMANDS.NEW_COMMAND; // a real dxo_* JSON-RPC method name
 
   // Create message (INV-DATA-001)
-  const message = new Uint8Array([commandType /* , params */]);
+  const message = encodeRpcRequest(nextId++, method /* , params */);
 
   // Send and handle errors (INV-CONS-003)
   try {

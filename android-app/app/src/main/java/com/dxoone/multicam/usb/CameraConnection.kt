@@ -149,9 +149,7 @@ class CameraConnection(
             }
 
             val proto = DxoOneUsbProtocol(
-                connection = connection,
-                endpointIn = endpointIn,
-                endpointOut = endpointOut,
+                io = UsbDeviceConnectionBulkIo(connection, endpointIn, endpointOut),
                 name = id.takeLast(4),
                 onJpegFrame = { frame -> jpegFrames.trySend(frame) },
                 onFatalError = { error -> onTransportFailed(error) }
@@ -280,8 +278,17 @@ class CameraConnection(
                     waitAtBarrier = if (barrier == null) null else {
                         {
                             arrivedAtBarrier = true
+                            // Broken before we got here: arriveAndAwait() returns at once.
+                            val alreadyBroken = barrier.isBroken
                             if (!barrier.arriveAndAwait()) {
-                                Log.w(TAG, "[$displayName] capture barrier timed out; sending anyway")
+                                Log.w(
+                                    TAG,
+                                    if (alreadyBroken) {
+                                        "[$displayName] capture barrier already broken; sending without waiting"
+                                    } else {
+                                        "[$displayName] capture barrier timed out; sending anyway"
+                                    }
+                                )
                             }
                         }
                     }

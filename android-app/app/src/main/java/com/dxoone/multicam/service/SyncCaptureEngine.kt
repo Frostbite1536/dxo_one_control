@@ -158,10 +158,13 @@ data class MultiCaptureResult(
     /**
      * Host-side trigger spread: latest minus earliest [CaptureResult.triggerWrittenAtNanos]
      * across the cameras that captured successfully, in nanoseconds. Null with fewer than two
-     * such cameras. This is when the requests left the host, not when the shutters fired.
+     * such cameras, and null in sequential mode (cameras are triggered one after another on
+     * purpose, so the spread would just be the sum of capture times). This is when the
+     * requests left the host, not when the shutters fired.
      */
     val triggerSpreadNanos: Long?
         get() {
+            if (mode == CaptureMode.SEQUENTIAL) return null
             val written = results.filter { it.success }.mapNotNull { it.triggerWrittenAtNanos }
             if (written.size < 2) return null
             return written.max() - written.min()
