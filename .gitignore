@@ -17,3 +17,6 @@ android-app/captures/
 # Local environment
 .env
 .env.*
+
+# Local agent worktrees (Claude Code)
+.claude/worktrees/

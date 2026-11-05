@@ -163,21 +163,25 @@ export class CameraManager {
             // INV-SEC-002: User permission required (handled by WebUSB API)
             const device = await this.usbBackend.requestDevice(PARAMS_DEVICE_REQUEST);
 
-            // Check if this device is already connected
-            // Use serial number for identification, or fallback to vendor-product ID
-            const existingId = device.serialNumber ||
-                              `${device.vendorId}-${device.productId}`;
-
-            for (const [id, camera] of this.cameras) {
-                // Bug fix: Use exact match or device reference comparison
-                // (includes() caused false positives with similar serial numbers)
-                if (id === existingId || camera.device === device) {
-                    throw new Error(`Camera ${existingId} is already connected`);
+            // Already connected? Same USBDevice object, or same serial number.
+            for (const camera of this.cameras.values()) {
+                if (camera.device === device ||
+                    (device.serialNumber && camera.device.serialNumber === device.serialNumber)) {
+                    throw new Error(`Camera ${camera.displayName} is already connected`);
                 }
             }
 
             // Create and initialize the camera device
             const camera = new CameraDevice(device, nickname);
+
+            // INV-MULTI-001: two cameras without a serial number would share the fallback
+            // id; keep ids unique (and stable for a given connection order).
+            if (this.cameras.has(camera.id)) {
+                let n = 2;
+                while (this.cameras.has(`${camera.id}#${n}`)) n++;
+                camera.id = `${camera.id}#${n}`;
+            }
+
             await camera.initialize();
 
             // Store the camera

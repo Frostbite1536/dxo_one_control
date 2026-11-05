@@ -84,8 +84,4 @@ sealed class CameraEvent {
 sealed class Screen(val route: String) {
     data object Main : Screen("main")
     data object Settings : Screen("settings")
-    data object Gallery : Screen("gallery")
-    data object CaptureResult : Screen("capture_result/{sessionId}") {
-        fun createRoute(sessionId: String) = "capture_result/$sessionId"
-    }
 }

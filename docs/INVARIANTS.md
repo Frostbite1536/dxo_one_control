@@ -222,11 +222,11 @@ sendCommand(userInput, userPayload);  // Direct user input
 
 **Enforcement (as implemented)**:
 - **Android:** `DxoOneMethods.isValidCommand` is an allowlist (`VALID_COMMANDS`), checked in `DxoOneUsbProtocol.sendCommand` before anything is written.
-- **JS: no allowlist.** `transferOutRPC` / `DxoTransport.request` / `CameraManager.sendCommandToAll` send any method name they are given. The invariant is **not enforced in JS**.
+- **JS:** `KNOWN_METHODS` / `isKnownMethod` in `DxoTransport.js` (same set as Android); `CameraDevice.transferOutRPC` (and so `CameraManager.sendCommandToAll`) and `dxo1usb.js` reject anything else before sending. Test: `test/transport.test.mjs`.
 
 **Not yet enforced** (intent kept; nothing in the code does this):
-- JS method allowlist and parameter validation.
-- Unit/fuzz tests for command rejection.
+- Parameter validation (method names are checked; params are not).
+- Fuzz tests for command rejection (unit tests exist: `test/transport.test.mjs`).
 - (The `0x01`-style byte opcode examples above are illustrative; the real protocol is JSON-RPC with `dxo_*` method names.)
 
 ---
@@ -455,12 +455,11 @@ const cameras = manager.getAllCameras();  // All look the same
 ```
 
 **Enforcement (as implemented)**:
-- JS `CameraDevice.id` = `usbDevice.serialNumber`, falling back to `vendor-product-Date.now()`. **The fallback is not stable across reconnects** (a camera without a readable serial gets a new id each time).
-- Android `CameraConnection.id` = `device.serialNumber`, falling back to a random UUID, also not stable.
-- `CameraManager` rejects duplicates by id / device object. `displayName` and `nickname` are supported on both platforms.
+- JS `CameraDevice.id` = `usbDevice.serialNumber`, falling back to `vendor-product-deviceVersion`; Android `CameraConnection.id` = serial, falling back to `vendor-product`. Both are stable across reconnects; if two serial-less cameras would collide, `CameraManager` / `UsbDeviceManager` append `#2`, `#3`, ... in connection order.
+- `CameraManager` rejects duplicates by device object or serial number; `UsbDeviceManager` reuses an already-connected device node. `displayName` and `nickname` are supported on both platforms.
 
 **Not yet enforced** (intent kept; nothing in the code does this):
-- A stable fallback id for cameras with no serial number.
+- Distinguishing two serial-less cameras across reconnects (their suffixes follow connection order).
 
 ### INV-MULTI-002: Maximum Camera Limit
 
@@ -592,8 +591,8 @@ async captureAll() {
 
 **Enforcement (as implemented)**:
 - JS: `captureAll()` logs total capture time and mode; each result carries a `timestamp`. `multi-camera.html` labels the modes "Parallel (Best Effort)" / "Sequential (Reliable)".
-- Android: `MainScreen` labels parallel mode "Parallel (~50ms sync)"; `SyncCaptureEngine` computes `syncVarianceMs`.
-- **The "~50 ms" figure is unmeasured** on either platform (nothing was run against real hardware). On Android, `syncVarianceMs` is the spread of per-camera command start times, not of when the shutters fired.
+- Android: `SyncCaptureEngine` holds every camera at a `CaptureBarrier` (bounded wait) so their `dxo_photo_take` writes start together, records when each write finished (`CaptureResult.triggerWrittenAtNanos`), and reports `MultiCaptureResult.triggerSpreadNanos` (max - min) as "trigger spread (host-side)" in the UI and notification.
+- **The "~50 ms" figure is unmeasured** on either platform (nothing was run against real hardware). The host-side trigger spread is not the shutter spread: the camera's own latency after receiving the command is unknown.
 
 **Not yet enforced** (intent kept; nothing in the code does this):
 - A measured variance figure.

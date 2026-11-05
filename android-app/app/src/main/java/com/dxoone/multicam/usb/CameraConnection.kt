@@ -23,7 +23,6 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
-import java.util.UUID
 import java.util.concurrent.CopyOnWriteArrayList
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -41,10 +40,14 @@ import java.util.concurrent.atomic.AtomicBoolean
  */
 class CameraConnection(
     val device: UsbDevice,
-    private val connection: UsbDeviceConnection
+    private val connection: UsbDeviceConnection,
+    /** Overrides the default id (UsbDeviceManager uses it to keep fallback ids unique). */
+    idOverride: String? = null
 ) {
     // Unique camera identification (INV-MULTI-001)
-    val id: String = device.serialNumber ?: UUID.randomUUID().toString()
+    // INV-MULTI-001: stable across reconnects - the serial number, or vendor/product id
+    // when the camera reports no serial (made unique by UsbDeviceManager if needed).
+    val id: String = idOverride ?: defaultId(device)
     val serialNumber: String? = device.serialNumber
 
     // User-assignable nickname (observable so renames reach the UI)
@@ -262,11 +265,37 @@ class CameraConnection(
     /**
      * Take a photo. Waits up to [DxoOneConstants.CAPTURE_TIMEOUT_MS] for the reply.
      *
-     * @return CaptureResult with timing and status information
+     * @param barrier if set, the request is held at this barrier (with its frame built and
+     *   this camera's request lock held) until every camera in the capture is ready to write,
+     *   so the writes start together. This call arrives at or leaves the barrier exactly once,
+     *   whatever happens.
+     * @return CaptureResult with timing and status information, including
+     *   [CaptureResult.triggerWrittenAtNanos] once the request has been written
      */
-    suspend fun takePhoto(): CaptureResult = withContext(Dispatchers.IO) {
+    suspend fun takePhoto(barrier: CaptureBarrier? = null): CaptureResult =
+        withContext(Dispatchers.IO) {
+            var arrivedAtBarrier = false
+            try {
+                capturePhoto(
+                    waitAtBarrier = if (barrier == null) null else {
+                        {
+                            arrivedAtBarrier = true
+                            if (!barrier.arriveAndAwait()) {
+                                Log.w(TAG, "[$displayName] capture barrier timed out; sending anyway")
+                            }
+                        }
+                    }
+                )
+            } finally {
+                // Didn't get as far as the barrier (not connected, transport closed, ...):
+                // don't make the other cameras wait for it.
+                if (!arrivedAtBarrier) barrier?.leave()
+            }
+        }
+
+    private suspend fun capturePhoto(waitAtBarrier: (suspend () -> Unit)?): CaptureResult {
         if (_connectionState.value != ConnectionState.CONNECTED) {
-            return@withContext CaptureResult(
+            return CaptureResult(
                 cameraId = id,
                 success = false,
                 error = "Camera not connected"
@@ -274,11 +303,14 @@ class CameraConnection(
         }
 
         val startTime = System.currentTimeMillis()
+        var writtenAt: Long? = null
 
-        try {
+        return try {
             val response = protocol?.sendCommand(
                 DxoOneMethods.PHOTO_TAKE,
-                timeoutMs = DxoOneConstants.CAPTURE_TIMEOUT_MS.toLong()
+                timeoutMs = DxoOneConstants.CAPTURE_TIMEOUT_MS.toLong(),
+                beforeWrite = waitAtBarrier,
+                onWritten = { writtenAt = it }
             )
             val endTime = System.currentTimeMillis()
 
@@ -287,14 +319,16 @@ class CameraConnection(
                     cameraId = id,
                     success = true,
                     timestamp = startTime,
-                    captureTimeMs = endTime - startTime
+                    captureTimeMs = endTime - startTime,
+                    triggerWrittenAtNanos = writtenAt
                 )
             } else {
                 CaptureResult(
                     cameraId = id,
                     success = false,
                     error = response?.error?.message ?: "Capture failed",
-                    timestamp = startTime
+                    timestamp = startTime,
+                    triggerWrittenAtNanos = writtenAt
                 )
             }
         } catch (e: CancellationException) {
@@ -304,14 +338,16 @@ class CameraConnection(
                 cameraId = id,
                 success = false,
                 error = "Capture timed out after ${e.timeoutMs}ms",
-                timestamp = startTime
+                timestamp = startTime,
+                triggerWrittenAtNanos = writtenAt
             )
         } catch (e: Exception) {
             CaptureResult(
                 cameraId = id,
                 success = false,
                 error = e.message ?: "Unknown error",
-                timestamp = startTime
+                timestamp = startTime,
+                triggerWrittenAtNanos = writtenAt
             )
         }
     }
@@ -603,6 +639,10 @@ class CameraConnection(
 
     companion object {
         private const val TAG = "CameraConnection"
+
+        fun defaultId(device: UsbDevice): String =
+            device.serialNumber?.takeIf { it.isNotBlank() }
+                ?: "%04x-%04x".format(device.vendorId, device.productId)
     }
 }
 
@@ -633,8 +673,16 @@ data class CameraStatus(
 data class CaptureResult(
     val cameraId: String,
     val success: Boolean,
+    /** Wall-clock time (ms) the capture call started, before any lock or barrier wait. */
     val timestamp: Long = System.currentTimeMillis(),
+    /** From [timestamp] to the reply, including lock/barrier waits. */
     val captureTimeMs: Long = 0,
     val filePath: String? = null,
-    val error: String? = null
+    val error: String? = null,
+    /**
+     * [System.nanoTime] right after the `dxo_photo_take` frame was fully written to bulk-OUT:
+     * the host-side trigger time. Null if it was never written. Only comparable with other
+     * readings from the same process; says nothing about when the shutter fired.
+     */
+    val triggerWrittenAtNanos: Long? = null
 )

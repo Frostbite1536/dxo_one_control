@@ -212,10 +212,7 @@ class CameraManagerService : Service() {
     suspend fun captureAll(): MultiCaptureResult {
         val cameras = getConnectedCameras()
 
-        val result = when (_captureMode.value) {
-            CaptureMode.PARALLEL -> syncCaptureEngine.captureAllParallel(cameras)
-            CaptureMode.SEQUENTIAL -> syncCaptureEngine.captureAllSequential(cameras)
-        }
+        val result = syncCaptureEngine.capture(cameras, _captureMode.value)
 
         _lastCaptureResult.value = result
         updateNotification(result)
@@ -290,13 +287,7 @@ class CameraManagerService : Service() {
         val connectedCount = getConnectedCount()
         val title = "DXO Multi-Cam"
         val text = when {
-            result != null -> {
-                if (result.allSucceeded) {
-                    "Captured ${result.succeededCount} photos (sync: ${result.syncVarianceMs}ms)"
-                } else {
-                    "Captured ${result.succeededCount}/${result.totalCameras} photos"
-                }
-            }
+            result != null -> result.summaryText()
             connectedCount > 0 -> "$connectedCount camera(s) connected"
             else -> "No cameras connected"
         }

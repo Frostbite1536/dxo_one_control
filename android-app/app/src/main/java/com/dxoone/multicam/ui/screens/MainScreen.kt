@@ -35,15 +35,18 @@ import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.unit.dp
 import androidx.hilt.navigation.compose.hiltViewModel
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.repeatOnLifecycle
 import com.dxoone.multicam.domain.model.CameraEvent
 import com.dxoone.multicam.service.CaptureMode
 import com.dxoone.multicam.ui.components.CameraPreviewCard
@@ -62,7 +65,7 @@ fun MainScreen(
     viewModel: MultiCameraViewModel = hiltViewModel(),
     onNavigateToSettings: () -> Unit = {}
 ) {
-    val uiState by viewModel.uiState.collectAsState()
+    val uiState by viewModel.uiState.collectAsStateWithLifecycle()
     val snackbarHostState = remember { SnackbarHostState() }
 
     var showConnectMenu by remember { mutableStateOf(false) }
@@ -77,15 +80,15 @@ fun MainScreen(
         }
     }
 
-    // Show capture result
-    LaunchedEffect(uiState.lastCaptureResult) {
-        uiState.lastCaptureResult?.let { result ->
-            val message = if (result.allSucceeded) {
-                "Captured ${result.succeededCount} photos (sync: ${result.syncVarianceMs}ms)"
-            } else {
-                "Captured ${result.succeededCount}/${result.totalCameras} photos"
+    // Show each capture summary once. These are one-shot events, not state, so returning to
+    // this screen doesn't replay the last one; one that arrives while the screen is stopped
+    // waits until it is visible again.
+    val lifecycleOwner = LocalLifecycleOwner.current
+    LaunchedEffect(viewModel, lifecycleOwner) {
+        lifecycleOwner.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            viewModel.captureMessages.collect { message ->
+                snackbarHostState.showSnackbar(message)
             }
-            snackbarHostState.showSnackbar(message)
         }
     }
 
@@ -289,9 +292,12 @@ fun MainScreen(
             // Last capture info
             uiState.lastCaptureResult?.let { result ->
                 Spacer(modifier = Modifier.height(8.dp))
+                val spread = result.triggerSpreadText
+                    ?.let { "trigger spread (host-side) $it, " }
+                    .orEmpty()
                 Text(
                     text = "Last capture: ${result.succeededCount}/${result.totalCameras} " +
-                            "(${result.syncVarianceMs}ms variance, ${result.totalTimeMs}ms total)",
+                            "(${spread}${result.totalTimeMs} ms total)",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.align(Alignment.CenterHorizontally)
