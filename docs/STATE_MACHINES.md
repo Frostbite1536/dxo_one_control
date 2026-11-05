@@ -507,7 +507,7 @@ One transport per camera, same rules on both platforms:
    request(method, params)                                                           │
      ├─ queued behind the in-flight request (JS promise chain / Kotlin request mutex)
      ├─ encode (refuses payload > 0xFFFF), write under the write lock, arm timeout
-     └─ pump delivers packet ─► demux ─┬─ reply, id matches (or no id, single in flight) ─► resolve
+     └─ pump delivers packet ─► demux ─┬─ reply, id matches (or no id, single in flight, safe*) ─► resolve
                                        ├─ stale id ─► dropped
                                        ├─ message with `method` (dxo_setting_applied, ...) ─► event handler
                                        └─ not RPC ─► JPEG reassembler (live view)
@@ -518,6 +518,8 @@ One transport per camera, same rules on both platforms:
      ──► in-flight request fails, transport CLOSED, owner notified
          (JS CameraDevice._onTransportFailure; Kotlin CameraConnection.onTransportFailed -> ERROR)
  close() ──► pump stopped (Kotlin: reader joined before interfaces are released)
+ * "safe": the camera has never sent a reply with an id, and no request has timed out
+   since the last id-matched reply (otherwise a late reply could reach the next request).
 ```
 
 A JSON-RPC `error` reply resolves normally on both platforms (JS: check `.error`; Kotlin: `isSuccess == false`); only transport problems reject / throw.

@@ -222,6 +222,29 @@ class DxoOneStreamDemuxTest {
     }
 
     @Test
+    fun replyWithNoIdIsDroppedOnceTheCameraHasSentIds() {
+        val first = register(1)
+        demux.feed(rpcMessage("""{"jsonrpc":"2.0","id":1,"result":"ok"}"""))
+        assertEquals(1, first.size)
+
+        val second = register(2)
+        demux.feed(rpcMessage("""{"jsonrpc":"2.0","result":"stray"}"""))
+        assertEquals(0, second.size)
+    }
+
+    @Test
+    fun lateReplyWithNoIdAfterTimeoutIsNotGivenToTheNextRequest() {
+        val timedOut = register(1)
+        demux.unregisterRequest(1)
+        demux.markRequestTimedOut()
+
+        val next = register(2)
+        demux.feed(rpcMessage("""{"jsonrpc":"2.0","result":"late"}"""))
+        assertEquals(0, timedOut.size)
+        assertEquals(0, next.size)
+    }
+
+    @Test
     fun replyWithNoIdAndNothingPendingIsDropped() {
         demux.feed(rpcMessage("""{"result":{}}"""))
         assertTrue(logs.any { it.contains("without id") })

@@ -51,15 +51,25 @@ async function open(usbBackend = navigator.usb) {
     const transport = new DxoTransport(device, inEndpoint, outEndpoint, {
         onFatal: () => { stopLiveViewLocal(); },
     });
-    await transport.open();
+    try {
+        await transport.open();
+    } catch (error) {
+        transport.close('Handshake failed');
+        try { await device.close(); } catch (_) { /* already closed */ }
+        throw error;
+    }
 
     const transferOutRPC = (method, params, options) => transport.request(method, params, options);
 
     const bindApplySetting = baseParams => (async data => {
         const params = { ...baseParams };
 
-        if (params.type === 'copyright' || params.type === 'artist') {
-            params.param = data;
+        // Setters that take a value fall back to their default param when called
+        // without one (instead of sending no param / "NaN").
+        if (data === undefined) {
+            // keep baseParams.param
+        } else if (params.type === 'copyright' || params.type === 'artist') {
+            params.param = String(data);
         } else if (params.type === 'mf_inv_distance') {
             // 0 - 5, with 6 digits of precision
             const dist = Math.min(Math.max(data, 0), 5).toFixed(6);

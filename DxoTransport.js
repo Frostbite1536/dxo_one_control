@@ -311,6 +311,11 @@ export class DxoTransport {
 
         this._seq = 0;
         this._inflight = null;
+        // Id-less replies are only attributable to the in-flight request while the
+        // camera has never sent an id and no request has timed out since the last
+        // matched reply (otherwise a late reply could be handed to the next request).
+        this._sawReplyId = false;
+        this._idlessUnsafe = false;
         this._requestChain = Promise.resolve();
         this._writeChain = Promise.resolve();
         this._running = false;
@@ -410,6 +415,7 @@ export class DxoTransport {
 
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
+                this._idlessUnsafe = true;
                 settle(reject, new TransportError(`${method} timed out after ${timeout} ms`, 'timeout'));
             }, timeout);
 
@@ -518,7 +524,9 @@ export class DxoTransport {
         const inflight = this._inflight;
 
         if (typeof message.id === 'number') {
+            this._sawReplyId = true;
             if (inflight && message.id === inflight.id) {
+                this._idlessUnsafe = false;
                 inflight.resolve(message);
             } else {
                 console.debug(`[${this.name}] dropped stale reply id=${message.id}`);
@@ -526,7 +534,12 @@ export class DxoTransport {
             return;
         }
 
-        // A reply without an id: with one request in flight it can only be that one.
+        // A reply without an id: with one request in flight it can only be that one,
+        // unless it may be a late reply to an earlier, timed-out request.
+        if (this._sawReplyId || this._idlessUnsafe) {
+            console.debug(`[${this.name}] dropped reply without id (cannot be attributed safely)`, message);
+            return;
+        }
         if (inflight) {
             console.debug(`[${this.name}] reply without id accepted for ${inflight.method}`);
             inflight.resolve(message);

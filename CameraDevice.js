@@ -47,6 +47,7 @@ export class CameraDevice {
 
         // Live view state
         this.isLiveViewActive = false;
+        this._frameHandler = null; // handler installed by the latest startLiveView()
 
         // Camera metadata cache
         this.settings = null;
@@ -217,19 +218,25 @@ export class CameraDevice {
             throw new Error(`Camera ${this.displayName} not connected`);
         }
 
-        this.transport.setFrameHandler(frame => {
+        const handler = frame => {
             const url = URL.createObjectURL(new Blob([frame], { 'type': 'image/jpeg' }));
             callback(url, () => URL.revokeObjectURL(url));
-        });
+        };
+        this._frameHandler = handler;
+        this.transport.setFrameHandler(handler);
 
         if (this.isLiveViewActive) return;
 
         try {
             await this.transferOutRPC('dxo_camera_mode_switch', { "param": 'view' });
-            this.isLiveViewActive = true;
+            // stopLiveView() (or another start) may have run while we waited.
+            if (this._frameHandler === handler) this.isLiveViewActive = true;
         } catch (error) {
-            this.transport?.setFrameHandler(null);
-            this.isLiveViewActive = false;
+            if (this._frameHandler === handler) {
+                this.transport?.setFrameHandler(null);
+                this._frameHandler = null;
+                this.isLiveViewActive = false;
+            }
             this.lastError = error;
             throw error;
         }
@@ -242,6 +249,7 @@ export class CameraDevice {
      * until then the transport discards any further video data.
      */
     stopLiveView() {
+        this._frameHandler = null;
         this.transport?.setFrameHandler(null);
         this.isLiveViewActive = false;
     }

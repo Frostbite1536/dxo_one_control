@@ -1,6 +1,7 @@
 package com.dxoone.multicam.service
 
 import com.dxoone.multicam.domain.model.CameraSettings
+import com.dxoone.multicam.domain.model.ExposureTimeSetting
 import com.dxoone.multicam.domain.model.FocusMode
 import com.dxoone.multicam.domain.model.ShootingMode
 import com.dxoone.multicam.usb.CameraConnection
@@ -37,8 +38,11 @@ object CameraSettingsApplier {
             ) {
                 add("aperture" to settings.aperture.param)
             }
-            if (settings.shootingMode == ShootingMode.SHUTTER_PRIORITY ||
-                settings.shootingMode == ShootingMode.MANUAL
+            // Exposure "auto" is not sent: dxo1usb.js (the known-working reference) has no
+            // "auto" exposure value, so the camera may reject it. Unverified on hardware.
+            if ((settings.shootingMode == ShootingMode.SHUTTER_PRIORITY ||
+                    settings.shootingMode == ShootingMode.MANUAL) &&
+                settings.exposureTime != ExposureTimeSetting.AUTO
             ) {
                 add("exposure_time" to settings.exposureTime.param)
             }

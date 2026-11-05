@@ -57,7 +57,7 @@
                     </span>
                 </div>
                 <div class="camera-info">
-                    ${camera.batteryLevel !== null ? `<span class="battery">🔋 ${camera.batteryLevel}%</span>` : ''}
+                    ${camera.batteryLevel !== null ? `<span class="battery">🔋 ${escapeHtml(camera.batteryLevel)}%</span>` : ''}
                     ${camera.isLiveViewActive ? '<span class="live-indicator">📺 Live</span>' : ''}
                     ${camera.lastError ? `<span class="error-indicator" title="${escapeHtml(camera.lastError)}">⚠️</span>` : ''}
                 </div>
@@ -130,7 +130,7 @@
                 <div class="camera-meta">
                     <p><strong>ID:</strong> ${escapeHtml(state.id)}</p>
                     ${state.serialNumber ? `<p><strong>Serial:</strong> ${escapeHtml(state.serialNumber)}</p>` : ''}
-                    ${state.batteryLevel !== null ? `<p><strong>Battery:</strong> ${state.batteryLevel}%</p>` : ''}
+                    ${state.batteryLevel !== null ? `<p><strong>Battery:</strong> ${escapeHtml(state.batteryLevel)}%</p>` : ''}
                 </div>
             </div>
         `;

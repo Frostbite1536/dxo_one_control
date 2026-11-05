@@ -4,7 +4,8 @@
 
     const $ = q => document.querySelector(q);
 
-    const log = msg => $('#msg').innerHTML = msg;
+    // textContent, not innerHTML: messages include camera-supplied JSON.
+    const log = msg => $('#msg').textContent = msg;
     const logJSON = obj => log(JSON.stringify(obj, null, 2));
 
     const dxo1 = {};

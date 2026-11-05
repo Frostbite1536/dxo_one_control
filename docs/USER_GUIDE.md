@@ -236,7 +236,7 @@ All of these live under `camera.command.setSettings`:
 - **`imageFormat`**: `rawOn`, `rawOff`, `tnrOn`, `tnrOff` (TNR combines four RAW files into one SuperRAW Plus file)
 - **`stillFocusingMode`**: `AF`, `MF`
 - **`afMode`**: `AF_S` (single shot), `AF_C` (continuous), `AF_OD` (on demand)
-- **`mfInvDistance`**: sets manual-focus inverse distance, but currently always sends the fixed value `0.000000` (it takes no argument)
+- **`mfInvDistance(value)`**: manual-focus inverse distance, clamped to 0–5 and sent with 6 decimals; without an argument it sends `0.000000`
 - **`shootingMode`**: `sport`, `portrait`, `landscape`, `night`, `program`, `aperture`, `shutter`, `manual`
 - **`iso`**: `auto`, `iso100` ... `iso51200`
 - **`aperture`**: `f1_8` through `f11` (1.8, 2, 2.2, 2.5, 2.8, 3.2, 3.5, 4, 4.5, 5, 5.6, 6.3, 7.1, 8, 9, 10, 11)
@@ -247,7 +247,7 @@ All of these live under `camera.command.setSettings`:
 - **`shutterMode`**: `single`, `timelapse`, and self-timer `timer0s`, `timer2s`, `timer10s`
 - **`imageQuality`**: `fine` (100), `normal` (95), `basic` (70)
 - **`autoWhiteBalance`**: `off`, `slight`, `medium`, `strong`
-- **`metadata`**: `copyright`, `artist` (currently send the fixed placeholder strings `COPYRIGHT` and `ARTIST`; they take no argument)
+- **`metadata`**: `copyright(text)`, `artist(text)`; without an argument they send the placeholder strings `COPYRIGHT` / `ARTIST`
 - **`videoQuality`**: `standard` (16 Mbps), `better` (22 Mbps), `highest` (30 Mbps)
 
 Other commands under `camera.command`:

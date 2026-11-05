@@ -7,6 +7,7 @@ import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbDeviceConnection
 import android.hardware.usb.UsbEndpoint
 import android.hardware.usb.UsbInterface
+import android.os.Looper
 import android.util.Log
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -539,11 +540,22 @@ class CameraConnection(
 
     /**
      * Disconnect and clean up resources. Safe to call more than once.
+     *
+     * Releasing joins the reader thread (up to READER_JOIN_TIMEOUT_MS), so when called on
+     * the main thread the release runs on a short-lived background thread instead of
+     * blocking the UI (e.g. "Disconnect all" with four cameras).
      */
     fun disconnect() {
         stopLiveView()
-        releaseHardware()
         _connectionState.value = ConnectionState.DISCONNECTED
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Thread({ releaseHardware() }, "dxo-usb-release-$id").apply {
+                isDaemon = true
+                start()
+            }
+        } else {
+            releaseHardware()
+        }
     }
 
     /**

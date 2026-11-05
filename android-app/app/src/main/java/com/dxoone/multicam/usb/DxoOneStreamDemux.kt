@@ -62,6 +62,17 @@ class DxoOneStreamDemux(
 
     fun pendingCount(): Int = synchronized(pendingLock) { pending.size }
 
+    // Id-less replies are only attributable to the in-flight request while the camera has
+    // never sent an id and no request has timed out since the last matched reply;
+    // otherwise a late reply could be handed to the next request. Same rule as JS.
+    @Volatile private var sawReplyId = false
+    @Volatile private var idlessUnsafe = false
+
+    /** Call when a request timed out: its reply may still arrive later. */
+    fun markRequestTimedOut() {
+        idlessUnsafe = true
+    }
+
     // ---------------------------------------------------------------------------------
     // Live view
     // ---------------------------------------------------------------------------------
@@ -196,11 +207,13 @@ class DxoOneStreamDemux(
         val response = toResponse(obj)
         val id = numericId(obj)
         if (id != null) {
+            sawReplyId = true
             val handler = synchronized(pendingLock) { pending.remove(id) }
             if (handler == null) {
                 log("Dropping stale RPC reply id=$id (no pending request): $text")
                 return
             }
+            idlessUnsafe = false
             handler(response.copy(id = id, matched = true))
             return
         }
@@ -211,7 +224,11 @@ class DxoOneStreamDemux(
         }
 
         // No id: deliver to the single in-flight request. We have no hardware proof that
-        // the camera echoes ids, so this fallback is required.
+        // the camera echoes ids, so this fallback is required -- but only while it is safe.
+        if (sawReplyId || idlessUnsafe) {
+            log("Dropping RPC reply without id (cannot be attributed safely): $text")
+            return
+        }
         val handler = synchronized(pendingLock) {
             when (pending.size) {
                 1 -> {

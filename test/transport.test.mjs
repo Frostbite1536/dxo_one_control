@@ -196,6 +196,33 @@ test('transport: a timed-out request does not shift later replies', async () => 
     t.close(); cam.unplug();
 });
 
+test('transport: a late id-less reply after a timeout is not given to the next request', async () => {
+    const cam = new FakeDxoOne({
+        handlers: {
+            slow: (req, c) => c.later(40, () => c.queueMessage({ result: 'reply-to-slow' })),
+            next: (req, c) => c.later(80, () => c.queueMessage({ id: req.id, result: 'reply-to-next' })),
+        },
+    });
+    const t = await openTransport(cam);
+    await assert.rejects(t.request('slow', undefined, { timeoutMs: 20 }), e => e.code === 'timeout');
+    const res = await t.request('next');
+    assert.equal(res.result, 'reply-to-next');
+    t.close(); cam.unplug();
+});
+
+test('transport: once the camera has sent ids, id-less replies are not attributed', async () => {
+    const cam = new FakeDxoOne({
+        handlers: {
+            withid: (req, c) => c.queueMessage({ id: req.id, result: 'ok' }),
+            noid: (req, c) => c.queueMessage({ result: 'stray' }),
+        },
+    });
+    const t = await openTransport(cam);
+    assert.equal((await t.request('withid')).result, 'ok');
+    await assert.rejects(t.request('noid', undefined, { timeoutMs: 30 }), e => e.code === 'timeout');
+    t.close(); cam.unplug();
+});
+
 test('transport: unplugging fails the in-flight request instead of hanging', async () => {
     let fatal = null;
     const cam = new FakeDxoOne({ handlers: { never: () => {} } });
@@ -275,6 +302,24 @@ test('dxo1usb: setSettings resolves true on the confirmed reply and sends correc
     await dxo.close();
 });
 
+test('dxo1usb: value-taking setters send the value, or their default when called without one', async () => {
+    const cam = new FakeDxoOne({
+        handlers: { dxo_setting_set: (req, c) => c.queueMessage({ id: req.id, result: { type: req.params.type } }) },
+    });
+    const dxo = await DXOONE.open(fakeUsbBackend([cam]));
+    await dxo.command.setSettings.metadata.artist('Jane');
+    await dxo.command.setSettings.metadata.copyright();
+    await dxo.command.setSettings.mfInvDistance(7);
+    await dxo.command.setSettings.mfInvDistance();
+    assert.deepEqual(cam.requests.map(r => r.params), [
+        { type: 'artist', param: 'Jane' },
+        { type: 'copyright', param: 'COPYRIGHT' },
+        { type: 'mf_inv_distance', param: '5.000000' },
+        { type: 'mf_inv_distance', param: '0.000000' },
+    ]);
+    await dxo.close();
+});
+
 test('dxo1usb: setSettings resolves false on a JSON-RPC error', async () => {
     const cam = new FakeDxoOne({
         handlers: { dxo_setting_set: (req, c) => c.queueMessage({ id: req.id, error: { code: -1, message: 'nope' } }) },
@@ -320,6 +365,28 @@ test('CameraManager: unplug during capture fails that camera without hanging the
     assert.equal(byId.OK02.status, 'success');
     assert.equal(byId.GONE.status, 'error');
     assert.equal(manager.cameraCount, 1);
+    await manager.dispose();
+});
+
+test('CameraDevice: stopping live view while it is starting leaves it stopped', async () => {
+    const cam = new FakeDxoOne({
+        serialNumber: 'LV02',
+        handlers: {
+            dxo_camera_mode_switch: (req, c) => c.later(30, () => c.queueMessage({ id: req.id, result: 'view' })),
+        },
+    });
+    const manager = new CameraManager({ usbBackend: fakeUsbBackend([cam]) });
+    const camera = await manager.connectCamera();
+
+    const urls = [];
+    const starting = camera.startLiveView(url => urls.push(url));
+    camera.stopLiveView();
+    await starting;
+    assert.equal(camera.isLiveViewActive, false);
+
+    cam.queueJpeg(makeJpeg(600));
+    await sleep(10);
+    assert.equal(urls.length, 0);
     await manager.dispose();
 });
 

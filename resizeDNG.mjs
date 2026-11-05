@@ -25,13 +25,15 @@ function batchResize() {
     }
 
     const files = fs.readdirSync(dngPath);
-    const outDir = path.join(dngPath, RESIZED_DIR);
+    const outDir = path.resolve(dngPath, RESIZED_DIR);
     fs.mkdirSync(outDir, { recursive: true });
 
     for (const f of files) {
         if (path.extname(f).toLowerCase() !== '.dng') continue;
 
-        const input = path.join(dngPath, f);
+        // resolve() yields an absolute path, so a file named "-x.dng" can't be
+        // mistaken for a sips option.
+        const input = path.resolve(dngPath, f);
         const output = path.join(outDir, `${path.parse(f).name}.jpg`);
 
         // Arguments are passed directly to sips (no shell), so filenames

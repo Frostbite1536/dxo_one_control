@@ -232,7 +232,7 @@ Add `android-app/` (package `com.dxoone.multicam`) as a native app next to the w
 
 ### Decision
 
-Introduce `DxoTransport.js` (used by both `dxo1usb.js` and `CameraDevice.js`) and, on Android, `DxoOneStreamDemux` + `DxoOneUsbProtocol` with the same rules: one read pump / reader thread per camera; a demux routes each packet to the in-flight RPC (matched by id; an id-less reply is accepted when exactly one request is in flight; stale ids dropped), to an event handler (messages with a `method`), or to the JPEG reassembler; one RPC in flight per camera; per-request timeouts; fatal USB errors fail the in-flight request.
+Introduce `DxoTransport.js` (used by both `dxo1usb.js` and `CameraDevice.js`) and, on Android, `DxoOneStreamDemux` + `DxoOneUsbProtocol` with the same rules: one read pump / reader thread per camera; a demux routes each packet to the in-flight RPC (matched by id; an id-less reply is accepted for the single in-flight request only while the camera has never sent an id and no request has timed out since the last matched reply; stale ids dropped), to an event handler (messages with a `method`), or to the JPEG reassembler; one RPC in flight per camera; per-request timeouts; fatal USB errors fail the in-flight request.
 
 ### Consequences
 

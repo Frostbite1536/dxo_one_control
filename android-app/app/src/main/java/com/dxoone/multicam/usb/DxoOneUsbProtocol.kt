@@ -11,6 +11,8 @@ import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 
 /** No reply to an RPC request arrived within its timeout. */
 class DxoCommandTimeoutException(val method: String, val timeoutMs: Long) :
@@ -59,13 +61,25 @@ class DxoOneUsbProtocol(
     private var readerThread: Thread? = null
     private val initSignatureSeen = CompletableDeferred<Unit>()
 
+    // ACKs requested by the camera are written off the reader thread, so a command holding
+    // the write lock never stops bulk-IN from being drained.
+    private val ackExecutor = Executors.newSingleThreadExecutor { r ->
+        Thread(r, "dxo-usb-ack-$name").apply { isDaemon = true }
+    }
+
     private val demux = DxoOneStreamDemux(
         events = object : DxoOneStreamDemux.Events {
             override fun onInitSignature() {
                 try {
-                    writeAck()
-                } catch (e: IOException) {
-                    Log.w(TAG, "[$name] failed to ACK init signature", e)
+                    ackExecutor.execute {
+                        try {
+                            writeAck()
+                        } catch (e: IOException) {
+                            Log.w(TAG, "[$name] failed to ACK init signature", e)
+                        }
+                    }
+                } catch (e: RejectedExecutionException) {
+                    // Transport is stopping.
                 }
                 initSignatureSeen.complete(Unit)
             }
@@ -152,7 +166,10 @@ class DxoOneUsbProtocol(
                     }
                 }
                 withTimeoutOrNull(timeoutMs) { deferred.await() }
-                    ?: throw DxoCommandTimeoutException(method, timeoutMs)
+                    ?: run {
+                        demux.markRequestTimedOut()
+                        throw DxoCommandTimeoutException(method, timeoutMs)
+                    }
             } finally {
                 inFlight = null
                 demux.unregisterRequest(id)
@@ -166,6 +183,7 @@ class DxoOneUsbProtocol(
      */
     fun stop() {
         running = false
+        ackExecutor.shutdown()
         failInFlight(DxoTransportClosedException("Transport stopped"))
         val thread = readerThread
         if (thread != null && thread !== Thread.currentThread()) {
