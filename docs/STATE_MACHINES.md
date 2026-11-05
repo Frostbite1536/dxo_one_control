@@ -394,7 +394,7 @@ Operations:
         │    │                      AGGREGATING_RESULTS                             │    │
         │    │                                                                      │    │
         │    │  Collect all CaptureResults                                          │    │
-        │    │  Calculate syncVarianceMs                                            │    │
+        │    │  Calculate triggerSpreadNanos (host-side write spread)               │    │
         │    │  Calculate totalTimeMs                                               │    │
         │    │  Determine allSucceeded                                              │    │
         │    │                                                                      │    │
@@ -892,7 +892,7 @@ A JSON-RPC `error` reply resolves normally on both platforms (JS: check `.error`
         │    │  │  allSucceeded: false  (one failure)                          │    │    │
         │    │  │  succeededCount: 3                                           │    │    │
         │    │  │  failedCount: 1                                              │    │    │
-        │    │  │  syncVarianceMs: 35  (47 - 12)                               │    │    │
+        │    │  │  triggerSpreadNanos: max - min of post-write times           │    │    │
         │    │  │  totalTimeMs: 523                                            │    │    │
         │    │  │  failedCameras: ["cam3"]                                     │    │    │
         │    │  │  succeededCameras: ["cam1", "cam2", "cam4"]                   │    │    │

@@ -99,13 +99,14 @@ if (!navigator.usb) {
     log('WebUSB is not available in this browser. Use Chrome, Edge or Opera over https:// or http://localhost.');
     $('#btnConnect').disabled = true;
 } else {
-    // An unplugged camera rejects its pending command; reflect that in the UI.
-    navigator.usb.addEventListener('disconnect', () => {
-        if (!camera) return;
-        camera = null;
-        isLiveViewRunning = false;
-        log('Camera disconnected');
-        render();
+    // An unplugged camera rejects its pending command; reflect that in the UI. Ignore other
+    // devices: the origin may have more than one DXO One paired (multi-camera page).
+    navigator.usb.addEventListener('disconnect', (event) => {
+        if (!camera || event.device !== camera.device) return;
+        disconnect().catch(() => {}).finally(() => {
+            log('Camera disconnected');
+            render();
+        });
     });
     render();
 }

@@ -362,6 +362,9 @@ async function open(usbBackend = navigator.usb) {
             },
         },
 
+        // The underlying USBDevice (e.g. to match navigator.usb 'disconnect' events)
+        device,
+
         // Disconnect
         close: () => {
             stopLiveViewLocal();

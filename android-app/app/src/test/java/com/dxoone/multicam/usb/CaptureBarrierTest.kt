@@ -48,10 +48,29 @@ class CaptureBarrierTest {
         assertFalse(barrier.arriveAndAwait())
         val waited = elapsedMs(start)
         assertTrue("waited ${waited}ms", waited in 150..1_000)
-        assertFalse(barrier.isReleased)
-        // A late party completes the count, so it is released rather than timing out.
-        assertTrue(barrier.arriveAndAwait())
+        assertTrue(barrier.isBroken)
         assertTrue(barrier.isReleased)
+        // A late party doesn't wait on a broken barrier; it sends at once.
+        val lateStart = System.nanoTime()
+        assertFalse(barrier.arriveAndAwait())
+        assertTrue(elapsedMs(lateStart) < 100)
+    }
+
+    @Test
+    fun aTimeoutReleasesEveryoneStillWaitingTogether() = runBlocking {
+        // A arrives at 0 ms, B at 200 ms, C never arrives: both go at A's deadline (~300 ms),
+        // not B at ~500 ms.
+        val barrier = CaptureBarrier(3, timeoutMs = 300)
+        val start = System.nanoTime()
+        val releasedAtMs = (0 until 2).map { k ->
+            async(Dispatchers.Default) {
+                delay(200L * k)
+                assertFalse(barrier.arriveAndAwait())
+                elapsedMs(start)
+            }
+        }.awaitAll()
+        assertTrue("released at $releasedAtMs", releasedAtMs.all { it in 250..450 })
+        assertTrue("released at $releasedAtMs", releasedAtMs.max() - releasedAtMs.min() < 100)
     }
 
     @Test

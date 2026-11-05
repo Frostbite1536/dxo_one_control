@@ -226,7 +226,7 @@ sendCommand(userInput, userPayload);  // Direct user input
 
 **Not yet enforced** (intent kept; nothing in the code does this):
 - Parameter validation (method names are checked; params are not).
-- Unit/fuzz tests for command rejection.
+- Fuzz tests for command rejection (unit tests exist: `test/transport.test.mjs`).
 - (The `0x01`-style byte opcode examples above are illustrative; the real protocol is JSON-RPC with `dxo_*` method names.)
 
 ---

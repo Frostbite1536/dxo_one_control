@@ -36,6 +36,6 @@
     <string name="settings">Settings</string>
     <string name="gallery">Gallery</string>
     <string name="sync_mode">Sync Mode</string>
-    <string name="sync_mode_parallel">Parallel (Best Effort ~50ms)</string>
+    <string name="sync_mode_parallel">Parallel (Best Effort)</string>
     <string name="sync_mode_sequential">Sequential (Reliable)</string>
 </resources>

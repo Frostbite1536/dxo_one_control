@@ -14,28 +14,40 @@ import java.util.concurrent.atomic.AtomicInteger
  * moment instead of being spread by mutex waits, JSON encoding and dispatch.
  *
  * A camera that is late (say, its request lock is held by another command) can't hold the
- * others back for more than [timeoutMs]: each waiter gives up after that long and sends
- * anyway. Each party must call exactly one of [arriveAndAwait] or [leave], exactly once.
+ * others back for more than [timeoutMs]: the first waiter to time out *breaks* the barrier,
+ * which releases every camera waiting at that moment together, and later arrivals don't
+ * wait at all. So the deadline is shared: [timeoutMs] after the first arrival at most.
+ * Each party must call exactly one of [arriveAndAwait] or [leave], exactly once.
  */
 class CaptureBarrier(parties: Int, private val timeoutMs: Long) {
     private val remaining = AtomicInteger(parties)
     private val allArrived = CompletableDeferred<Unit>()
+    @Volatile private var broken = false
 
     init {
         if (parties <= 0) allArrived.complete(Unit)
     }
 
-    /** True once every party has arrived or left. */
+    /** True once waiters are no longer held: every party arrived or left, or it broke. */
     val isReleased: Boolean get() = allArrived.isCompleted
+
+    /** True if a waiter timed out before every party arrived or left. */
+    val isBroken: Boolean get() = broken
 
     /**
      * Count this party in and wait for the rest, at most [timeoutMs].
      *
-     * @return true if every party arrived or left in time, false if this waiter timed out
+     * @return true if every party arrived or left in time, false if the barrier broke
+     *   (this waiter or an earlier one timed out); the caller sends either way.
      */
     suspend fun arriveAndAwait(): Boolean {
         countDown()
-        return withTimeoutOrNull(timeoutMs) { allArrived.await() } != null
+        if (withTimeoutOrNull(timeoutMs) { allArrived.await() } == null) {
+            // Break the barrier: release everyone still waiting together with us.
+            broken = true
+            allArrived.complete(Unit)
+        }
+        return !broken
     }
 
     /** Count this party out without waiting; it will not send. */
@@ -44,6 +56,6 @@ class CaptureBarrier(parties: Int, private val timeoutMs: Long) {
     }
 
     private fun countDown() {
-        if (remaining.decrementAndGet() <= 0) allArrived.complete(Unit)
+        if (remaining.decrementAndGet() <= 0 && !broken) allArrived.complete(Unit)
     }
 }
