@@ -80,12 +80,7 @@ fun MainScreen(
     // Show capture result
     LaunchedEffect(uiState.lastCaptureResult) {
         uiState.lastCaptureResult?.let { result ->
-            val message = if (result.allSucceeded) {
-                "Captured ${result.succeededCount} photos (sync: ${result.syncVarianceMs}ms)"
-            } else {
-                "Captured ${result.succeededCount}/${result.totalCameras} photos"
-            }
-            snackbarHostState.showSnackbar(message)
+            snackbarHostState.showSnackbar(result.summaryText())
         }
     }
 
@@ -289,9 +284,12 @@ fun MainScreen(
             // Last capture info
             uiState.lastCaptureResult?.let { result ->
                 Spacer(modifier = Modifier.height(8.dp))
+                val spread = result.triggerSpreadText
+                    ?.let { "trigger spread (host-side) $it, " }
+                    .orEmpty()
                 Text(
                     text = "Last capture: ${result.succeededCount}/${result.totalCameras} " +
-                            "(${result.syncVarianceMs}ms variance, ${result.totalTimeMs}ms total)",
+                            "(${spread}${result.totalTimeMs} ms total)",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                     modifier = Modifier.align(Alignment.CenterHorizontally)

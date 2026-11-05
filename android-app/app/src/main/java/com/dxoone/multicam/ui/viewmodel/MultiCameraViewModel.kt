@@ -9,7 +9,7 @@ import com.dxoone.multicam.domain.model.CameraUiState
 import com.dxoone.multicam.domain.model.MultiCameraUiState
 import com.dxoone.multicam.service.CameraSettingsApplier
 import com.dxoone.multicam.service.CaptureMode
-import com.dxoone.multicam.service.MultiCaptureResult
+import com.dxoone.multicam.service.SyncCaptureEngine
 import com.dxoone.multicam.usb.CameraConnection
 import com.dxoone.multicam.usb.ConnectionState
 import com.dxoone.multicam.usb.DxoOneConstants
@@ -17,9 +17,6 @@ import com.dxoone.multicam.usb.UsbDeviceManager
 import dagger.hilt.android.lifecycle.HiltViewModel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.ExperimentalCoroutinesApi
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -50,8 +47,7 @@ class MultiCameraViewModel @Inject constructor(
     private val _uiState = MutableStateFlow(MultiCameraUiState())
     val uiState: StateFlow<MultiCameraUiState> = _uiState.asStateFlow()
 
-    private val _captureResult = MutableStateFlow<MultiCaptureResult?>(null)
-    val captureResult: StateFlow<MultiCaptureResult?> = _captureResult.asStateFlow()
+    private val captureEngine = SyncCaptureEngine()
 
     // Available USB devices (not yet connected)
     private var availableDevices: List<UsbDevice> = emptyList()
@@ -249,18 +245,16 @@ class MultiCameraViewModel @Inject constructor(
 
         viewModelScope.launch {
             try {
-                val results = when (_uiState.value.captureMode) {
-                    CaptureMode.PARALLEL -> captureParallel(cameras)
-                    CaptureMode.SEQUENTIAL -> captureSequential(cameras)
-                }
+                val results = captureEngine.capture(cameras, _uiState.value.captureMode)
 
-                _captureResult.value = results
                 _uiState.update {
                     it.copy(
                         isCapturing = false,
                         lastCaptureResult = results
                     )
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 _uiState.update {
                     it.copy(
@@ -270,63 +264,6 @@ class MultiCameraViewModel @Inject constructor(
                 }
             }
         }
-    }
-
-    private suspend fun captureParallel(cameras: List<CameraConnection>): MultiCaptureResult =
-        coroutineScope {
-            val sessionId = java.util.UUID.randomUUID().toString()
-            val startTime = System.currentTimeMillis()
-
-            // Launch parallel capture jobs
-            val deferredResults = cameras.map { camera ->
-                async { camera.takePhoto() }
-            }
-
-            // Await all results
-            val results = deferredResults.awaitAll()
-
-            val endTime = System.currentTimeMillis()
-
-            val successfulTimestamps = results.filter { it.success }.map { it.timestamp }
-            val syncVariance = if (successfulTimestamps.size > 1) {
-                successfulTimestamps.max() - successfulTimestamps.min()
-            } else 0L
-
-            MultiCaptureResult(
-                sessionId = sessionId,
-                totalCameras = cameras.size,
-                results = results,
-                allSucceeded = results.all { it.success },
-                syncVarianceMs = syncVariance,
-                totalTimeMs = endTime - startTime,
-                mode = CaptureMode.PARALLEL
-            )
-        }
-
-    private suspend fun captureSequential(cameras: List<CameraConnection>): MultiCaptureResult {
-        val sessionId = java.util.UUID.randomUUID().toString()
-        val startTime = System.currentTimeMillis()
-
-        val results = cameras.map { camera ->
-            camera.takePhoto()
-        }
-
-        val endTime = System.currentTimeMillis()
-
-        val successfulTimestamps = results.filter { it.success }.map { it.timestamp }
-        val syncVariance = if (successfulTimestamps.size > 1) {
-            successfulTimestamps.max() - successfulTimestamps.min()
-        } else 0L
-
-        return MultiCaptureResult(
-            sessionId = sessionId,
-            totalCameras = cameras.size,
-            results = results,
-            allSucceeded = results.all { it.success },
-            syncVarianceMs = syncVariance,
-            totalTimeMs = endTime - startTime,
-            mode = CaptureMode.SEQUENTIAL
-        )
     }
 
     private fun setCaptureMode(mode: CaptureMode) {

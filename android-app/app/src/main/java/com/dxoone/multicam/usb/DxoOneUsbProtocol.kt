@@ -128,8 +128,17 @@ class DxoOneUsbProtocol(
      * Send a JSON-RPC command and wait for its reply.
      *
      * Only one request is in flight per camera; concurrent callers queue on a mutex.
-     * The timeout covers the wait for the reply (not the wait for the mutex).
+     * The timeout covers the wait for the reply (not the wait for the mutex, nor
+     * [beforeWrite]).
      *
+     * @param beforeWrite called with this camera's request lock held, after the frame has
+     *   been built and encoded and just before it is written. A multi-camera capture uses it
+     *   to hold every camera at a [CaptureBarrier] so their writes start together. It must be
+     *   bounded: the request lock stays held while it runs.
+     * @param onWritten called with a [System.nanoTime] reading taken right after the request
+     *   frame was fully written to bulk-OUT, before the reply arrives. Not called if the write
+     *   fails. This is the closest host-side proxy for when the camera received the command;
+     *   there is no feedback on when it actually acted on it.
      * @return the matched reply (check [JsonRpcResponse.isSuccess])
      * @throws IllegalArgumentException for an unknown command
      * @throws DxoCommandTimeoutException if no reply arrives within [timeoutMs]
@@ -139,7 +148,9 @@ class DxoOneUsbProtocol(
     suspend fun sendCommand(
         method: String,
         params: Map<String, Any>? = null,
-        timeoutMs: Long = defaultTimeoutFor(method)
+        timeoutMs: Long = defaultTimeoutFor(method),
+        beforeWrite: (suspend () -> Unit)? = null,
+        onWritten: ((writtenAtNanos: Long) -> Unit)? = null
     ): JsonRpcResponse {
         // INV-SEC-003: Validate command before transmission
         if (!DxoOneMethods.isValidCommand(method)) {
@@ -154,18 +165,25 @@ class DxoOneUsbProtocol(
             // INV-DATA-001: proper message format
             val message = DxoOneStreamDemux.buildRpcMessage(payload)
 
+            // Wait (if asked) before registering the request, so no reply can be attributed
+            // to it before it is on the wire.
+            beforeWrite?.invoke()
+
             val deferred = CompletableDeferred<JsonRpcResponse>()
             demux.registerRequest(id) { deferred.complete(it) }
             inFlight = deferred
             try {
-                // The device may have died between ensureOpen() and registration.
+                // The device may have died between ensureOpen() and registration (or while
+                // waiting in beforeWrite).
                 ensureOpen()
-                withContext(Dispatchers.IO) {
+                val writtenAt = withContext(Dispatchers.IO) {
                     synchronized(writeLock) {
                         writeFully(DxoOneConstants.METADATA_INIT_RESPONSE_SIGNATURE)
                         writeFully(message)
+                        System.nanoTime()
                     }
                 }
+                onWritten?.invoke(writtenAt)
                 withTimeoutOrNull(timeoutMs) { deferred.await() }
                     ?: run {
                         demux.markRequestTimedOut(id)
