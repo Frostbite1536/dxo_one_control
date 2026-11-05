@@ -172,22 +172,22 @@ async function connectCamera() {
 ```javascript
 // Bad: Linear search in array
 const COMMANDS = [
-  { id: 0x01, name: 'CAPTURE' },
-  { id: 0x02, name: 'STATUS' },
+  { method: 'dxo_photo_take', name: 'CAPTURE' },
+  { method: 'dxo_camera_status_get', name: 'STATUS' },
   // ... 50 more
 ];
-function getCommand(id) {
-  return COMMANDS.find(cmd => cmd.id === id);  // O(n)
+function getCommand(method) {
+  return COMMANDS.find(cmd => cmd.method === method);  // O(n)
 }
 
 // Better: Map for O(1) lookup
 const COMMANDS = new Map([
-  [0x01, 'CAPTURE'],
-  [0x02, 'STATUS'],
+  ['dxo_photo_take', 'CAPTURE'],
+  ['dxo_camera_status_get', 'STATUS'],
   // ...
 ]);
-function getCommand(id) {
-  return COMMANDS.get(id);  // O(1)
+function getCommand(method) {
+  return COMMANDS.get(method);  // O(1)
 }
 ```
 
