@@ -87,6 +87,21 @@ object DxoOneConstants {
     const val DEAD_DEVICE_FAST_FAIL_MS = 5L
     const val DEAD_DEVICE_FAST_FAIL_COUNT = 50
 
+    /**
+     * After this many consecutive immediate bulk-IN failures the reader assumes the endpoint
+     * may be halted (STALL) and sends CLEAR_FEATURE(ENDPOINT_HALT) before giving up.
+     */
+    const val STALL_CLEAR_AFTER_FAILURES = 5
+
+    /** Halt clears allowed without an intervening successful read before the device counts as dead. */
+    const val MAX_HALT_CLEARS = 3
+
+    /** Bound for a queued ACK write to finish when the transport stops. */
+    const val ACK_DRAIN_TIMEOUT_MS = 500L
+
+    /** Bound for waiting on a previous connection to the same device to be released. */
+    const val RELEASE_WAIT_TIMEOUT_MS = 2000L
+
     // Multi-camera limits (INV-MULTI-002)
     const val MAX_CAMERAS = 4
 }

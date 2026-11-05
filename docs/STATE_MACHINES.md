@@ -514,12 +514,17 @@ One transport per camera, same rules on both platforms:
 
  per-request outcomes: reply | timeout (JS 5 s, 40 s for dxo_photo_take;
                        Android 10 s, 40 s for dxo_photo_take) | closed
+ halted endpoint (Kotlin): after 5 immediate bulk-IN failures send CLEAR_FEATURE(ENDPOINT_HALT)
+     (max 3 clears between successful reads); a failed bulk-OUT gets one clear + retry
+     (JS: res.status === 'stall' -> device.clearHalt('in'))
  fatal USB error / dead device (Kotlin: 50 immediate bulk-IN failures, 250 ms polls otherwise)
      ──► in-flight request fails, transport CLOSED, owner notified
          (JS CameraDevice._onTransportFailure; Kotlin CameraConnection.onTransportFailed -> ERROR)
  close() ──► pump stopped (Kotlin: reader joined before interfaces are released)
- * "safe": the camera has never sent a reply with an id, and no request has timed out
-   since the last id-matched reply (otherwise a late reply could reach the next request).
+ * "safe": the camera has never sent a reply with an id. After a timeout, the next id-less
+   reply is taken to be the late reply to the timed-out request and is dropped; if that
+   makes the current request time out, the flag is not re-armed, so a reply that is truly
+   lost costs at most one extra request.
 ```
 
 A JSON-RPC `error` reply resolves normally on both platforms (JS: check `.error`; Kotlin: `isSuccess == false`); only transport problems reject / throw.

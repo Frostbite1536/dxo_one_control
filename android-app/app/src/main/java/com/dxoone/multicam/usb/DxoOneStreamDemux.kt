@@ -62,15 +62,27 @@ class DxoOneStreamDemux(
 
     fun pendingCount(): Int = synchronized(pendingLock) { pending.size }
 
-    // Id-less replies are only attributable to the in-flight request while the camera has
-    // never sent an id and no request has timed out since the last matched reply;
-    // otherwise a late reply could be handed to the next request. Same rule as JS.
-    @Volatile private var sawReplyId = false
-    @Volatile private var idlessUnsafe = false
+    // Id-less replies (fallback for a camera that doesn't echo ids). Same rule as JS:
+    // - never attributed once the camera has sent any reply with an id;
+    // - after a timeout, the next id-less reply is assumed to be the late reply to the
+    //   timed-out request and is dropped. If that drop then makes the current request time
+    //   out, that timeout does not re-arm the flag, so a reply that is truly lost costs at
+    //   most one extra request and the transport recovers.
+    private val idlessLock = Any()
+    private var sawReplyId = false              // guarded by idlessLock
+    private var expectLateIdless = false        // guarded by idlessLock
+    private var droppedIdlessForId: Int? = null // guarded by idlessLock
 
-    /** Call when a request timed out: its reply may still arrive later. */
-    fun markRequestTimedOut() {
-        idlessUnsafe = true
+    /** Call when request [id] timed out: its reply may still arrive later. */
+    fun markRequestTimedOut(id: Int) {
+        synchronized(idlessLock) {
+            if (droppedIdlessForId == id) {
+                // It timed out because we dropped its (id-less) reply; don't re-arm.
+                droppedIdlessForId = null
+            } else if (!sawReplyId) {
+                expectLateIdless = true
+            }
+        }
     }
 
     // ---------------------------------------------------------------------------------
@@ -207,13 +219,12 @@ class DxoOneStreamDemux(
         val response = toResponse(obj)
         val id = numericId(obj)
         if (id != null) {
-            sawReplyId = true
+            synchronized(idlessLock) { sawReplyId = true }
             val handler = synchronized(pendingLock) { pending.remove(id) }
             if (handler == null) {
                 log("Dropping stale RPC reply id=$id (no pending request): $text")
                 return
             }
-            idlessUnsafe = false
             handler(response.copy(id = id, matched = true))
             return
         }
@@ -225,8 +236,19 @@ class DxoOneStreamDemux(
 
         // No id: deliver to the single in-flight request. We have no hardware proof that
         // the camera echoes ids, so this fallback is required -- but only while it is safe.
-        if (sawReplyId || idlessUnsafe) {
-            log("Dropping RPC reply without id (cannot be attributed safely): $text")
+        val dropReason = synchronized(idlessLock) {
+            when {
+                sawReplyId -> "camera uses ids"
+                expectLateIdless -> {
+                    expectLateIdless = false
+                    droppedIdlessForId = synchronized(pendingLock) { pending.keys.singleOrNull() }
+                    "late reply to a timed-out request"
+                }
+                else -> null
+            }
+        }
+        if (dropReason != null) {
+            log("Dropping RPC reply without id ($dropReason): $text")
             return
         }
         val handler = synchronized(pendingLock) {

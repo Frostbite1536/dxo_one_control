@@ -13,6 +13,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import java.io.IOException
 import java.util.concurrent.Executors
 import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.TimeUnit
 
 /** No reply to an RPC request arrived within its timeout. */
 class DxoCommandTimeoutException(val method: String, val timeoutMs: Long) :
@@ -167,7 +168,7 @@ class DxoOneUsbProtocol(
                 }
                 withTimeoutOrNull(timeoutMs) { deferred.await() }
                     ?: run {
-                        demux.markRequestTimedOut()
+                        demux.markRequestTimedOut(id)
                         throw DxoCommandTimeoutException(method, timeoutMs)
                     }
             } finally {
@@ -197,6 +198,15 @@ class DxoOneUsbProtocol(
             }
         }
         readerThread = null
+        // Let a queued/running ACK finish before the caller closes the connection, so no
+        // bulk-OUT races the native close.
+        try {
+            if (!ackExecutor.awaitTermination(DxoOneConstants.ACK_DRAIN_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                Log.w(TAG, "[$name] ACK writer did not finish within ${DxoOneConstants.ACK_DRAIN_TIMEOUT_MS}ms")
+            }
+        } catch (e: InterruptedException) {
+            Thread.currentThread().interrupt()
+        }
     }
 
     // ---------------------------------------------------------------------------------
@@ -215,6 +225,7 @@ class DxoOneUsbProtocol(
     private fun readLoop() {
         val buffer = ByteArray(DxoOneConstants.MAX_PACKET_SIZE)
         var fastFailures = 0
+        var haltClears = 0 // since the last successful read
         try {
             while (running) {
                 val started = System.nanoTime()
@@ -225,6 +236,7 @@ class DxoOneUsbProtocol(
                 when {
                     n > 0 -> {
                         fastFailures = 0
+                        haltClears = 0
                         try {
                             demux.feed(buffer, n)
                         } catch (e: Exception) {
@@ -235,6 +247,18 @@ class DxoOneUsbProtocol(
                         val elapsedMs = (System.nanoTime() - started) / 1_000_000
                         if (elapsedMs < DxoOneConstants.DEAD_DEVICE_FAST_FAIL_MS) {
                             fastFailures++
+                            // bulkTransfer returns -1 immediately both for a halted (STALLed)
+                            // endpoint and for a gone device. Try clearing the halt first; a
+                            // gone device fails the control transfer and keeps counting.
+                            if (fastFailures == DxoOneConstants.STALL_CLEAR_AFTER_FAILURES &&
+                                haltClears < DxoOneConstants.MAX_HALT_CLEARS &&
+                                clearHalt(endpointIn)
+                            ) {
+                                haltClears++
+                                Log.w(TAG, "[$name] bulk-IN halted; cleared (attempt $haltClears)")
+                                fastFailures = 0
+                                continue
+                            }
                             if (fastFailures >= DxoOneConstants.DEAD_DEVICE_FAST_FAIL_COUNT) {
                                 fail(
                                     DxoTransportClosedException(
@@ -288,16 +312,47 @@ class DxoOneUsbProtocol(
         synchronized(writeLock) { writeFully(DxoOneConstants.METADATA_INIT_RESPONSE_SIGNATURE) }
     }
 
-    /** Must be called with [writeLock] held. */
+    /**
+     * Must be called with [writeLock] held. A failed transfer (-1, e.g. a halted endpoint)
+     * gets one CLEAR_FEATURE(ENDPOINT_HALT) and one retry.
+     */
     private fun writeFully(data: ByteArray) {
-        val n = connection.bulkTransfer(endpointOut, data, data.size, DxoOneConstants.USB_TIMEOUT_MS)
+        var n = connection.bulkTransfer(endpointOut, data, data.size, DxoOneConstants.USB_TIMEOUT_MS)
+        if (n < 0 && clearHalt(endpointOut)) {
+            Log.w(TAG, "[$name] bulk-OUT halted; cleared, retrying")
+            n = connection.bulkTransfer(endpointOut, data, data.size, DxoOneConstants.USB_TIMEOUT_MS)
+        }
         if (n != data.size) {
             throw IOException("bulk-OUT wrote $n of ${data.size} bytes")
         }
     }
 
+    /**
+     * Standard CLEAR_FEATURE(ENDPOINT_HALT) request to [endpoint] (USB 2.0 §9.4.1). Android
+     * has no public clearHalt(); the kernel's usbfs resets the host-side endpoint state when
+     * this request succeeds.
+     *
+     * @return true if the device accepted the request
+     */
+    private fun clearHalt(endpoint: UsbEndpoint): Boolean {
+        val result = connection.controlTransfer(
+            USB_RECIP_ENDPOINT_OUT, // host-to-device | standard | endpoint
+            USB_REQ_CLEAR_FEATURE,
+            USB_FEATURE_ENDPOINT_HALT,
+            endpoint.address,
+            null,
+            0,
+            DxoOneConstants.USB_TIMEOUT_MS
+        )
+        return result >= 0
+    }
+
     companion object {
         private const val TAG = "DxoOneUsbProtocol"
+
+        private const val USB_RECIP_ENDPOINT_OUT = 0x02
+        private const val USB_REQ_CLEAR_FEATURE = 0x01
+        private const val USB_FEATURE_ENDPOINT_HALT = 0x00
 
         fun defaultTimeoutFor(method: String): Long =
             if (method == DxoOneMethods.PHOTO_TAKE) {

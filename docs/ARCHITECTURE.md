@@ -105,7 +105,7 @@
 One `DxoTransport` per opened camera. It is the only code that reads the bulk-IN endpoint. Rules (the Android `DxoOneStreamDemux` / `DxoOneUsbProtocol` follow the same ones):
 
 - **One read pump per camera.** Every bulk-IN packet goes through `DxoStreamDemux`, which routes it to:
-  - the in-flight RPC, matched by `id` (a reply without an `id` is accepted for the single in-flight request only while the camera has never sent an id and no request has timed out since the last matched reply; stale ids are dropped);
+  - the in-flight RPC, matched by `id` (a reply without an `id` is accepted for the single in-flight request only while the camera has never sent an id; after a timeout the next id-less reply is treated as the late reply and dropped (a truly lost reply costs at most one extra request); stale ids are dropped);
   - an event handler, for messages carrying a `method` (e.g. `dxo_setting_applied`; `dxo_usb_flush_forced` is ignored);
   - the live-view JPEG reassembler, for everything else.
 - **One RPC in flight per camera**; further requests queue behind it.

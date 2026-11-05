@@ -236,12 +236,34 @@ class DxoOneStreamDemuxTest {
     fun lateReplyWithNoIdAfterTimeoutIsNotGivenToTheNextRequest() {
         val timedOut = register(1)
         demux.unregisterRequest(1)
-        demux.markRequestTimedOut()
+        demux.markRequestTimedOut(1)
 
         val next = register(2)
         demux.feed(rpcMessage("""{"jsonrpc":"2.0","result":"late"}"""))
         assertEquals(0, timedOut.size)
         assertEquals(0, next.size)
+    }
+
+    @Test
+    fun cameraWithoutIdsRecoversAfterAReplyIsLostEntirely() {
+        // Request 1 times out and its reply never arrives.
+        register(1)
+        demux.unregisterRequest(1)
+        demux.markRequestTimedOut(1)
+
+        // Request 2's reply is taken for the late reply and dropped; 2 then times out.
+        val second = register(2)
+        demux.feed(rpcMessage("""{"jsonrpc":"2.0","result":"two"}"""))
+        assertEquals(0, second.size)
+        demux.unregisterRequest(2)
+        demux.markRequestTimedOut(2)
+
+        // From now on id-less replies are delivered again.
+        for (n in 3..5) {
+            val got = register(n)
+            demux.feed(rpcMessage("""{"jsonrpc":"2.0","result":"r$n"}"""))
+            assertEquals(1, got.size)
+        }
     }
 
     @Test

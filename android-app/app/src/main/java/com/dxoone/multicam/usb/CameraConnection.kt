@@ -93,6 +93,14 @@ class CameraConnection(
     private var dataInterface: UsbInterface? = null
 
     private val released = AtomicBoolean(false)
+    private val releaseDone = java.util.concurrent.CountDownLatch(1)
+
+    /**
+     * Wait until this connection's interfaces are released and the connection is closed
+     * (e.g. before reopening the same device). @return true if released within [timeoutMs].
+     */
+    fun awaitReleased(timeoutMs: Long): Boolean =
+        releaseDone.await(timeoutMs, java.util.concurrent.TimeUnit.MILLISECONDS)
 
     /**
      * Initialize the camera connection.
@@ -564,6 +572,14 @@ class CameraConnection(
      */
     private fun releaseHardware() {
         if (!released.compareAndSet(false, true)) return
+        try {
+            releaseHardwareOnce()
+        } finally {
+            releaseDone.countDown()
+        }
+    }
+
+    private fun releaseHardwareOnce() {
         protocol?.setLiveViewEnabled(false)
         try {
             protocol?.stop()

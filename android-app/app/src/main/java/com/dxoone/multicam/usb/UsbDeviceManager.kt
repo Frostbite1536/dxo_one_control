@@ -8,14 +8,17 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbDevice
 import android.hardware.usb.UsbManager
 import android.os.Build
+import android.util.Log
 import androidx.core.content.ContextCompat
 import dagger.hilt.android.qualifiers.ApplicationContext
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.withContext
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -53,6 +56,17 @@ class UsbDeviceManager @Inject constructor(
 
     /** Serializes connects so the camera limit and duplicate checks can't race. */
     private val connectMutex = Mutex()
+
+    /**
+     * Connections disconnected recently, by device node. Their release may still be running
+     * on a background thread; a reconnect to the same device waits for it.
+     */
+    private val releasing = java.util.concurrent.ConcurrentHashMap<String, CameraConnection>()
+
+    private fun disconnectTracked(camera: CameraConnection) {
+        releasing[camera.device.deviceName] = camera
+        camera.disconnect()
+    }
 
     companion object {
         private const val TAG = "UsbDeviceManager"
@@ -142,7 +156,7 @@ class UsbDeviceManager @Inject constructor(
         }
 
         // Disconnect all cameras
-        _connectedCameras.value.values.forEach { it.disconnect() }
+        _connectedCameras.value.values.forEach { disconnectTracked(it) }
         _connectedCameras.value = emptyMap()
     }
 
@@ -208,6 +222,14 @@ class UsbDeviceManager @Inject constructor(
     }
 
     private suspend fun connectDeviceLocked(device: UsbDevice): CameraConnection? {
+        // A previous connection to this device may still be releasing its interfaces.
+        releasing.remove(device.deviceName)?.let { previous ->
+            val done = withContext(Dispatchers.IO) {
+                previous.awaitReleased(DxoOneConstants.RELEASE_WAIT_TIMEOUT_MS)
+            }
+            if (!done) Log.w(TAG, "Previous connection to ${device.deviceName} still releasing")
+        }
+
         // Already connected (same USB device node): reuse instead of opening it twice.
         _connectedCameras.value.values.firstOrNull { it.device.deviceName == device.deviceName }
             ?.let { return it }
@@ -244,7 +266,7 @@ class UsbDeviceManager @Inject constructor(
             _connectedCameras.update { it + (cameraConnection.id to cameraConnection) }
             return cameraConnection
         } else {
-            cameraConnection.disconnect()
+            disconnectTracked(cameraConnection)
             return null
         }
     }
@@ -254,7 +276,7 @@ class UsbDeviceManager @Inject constructor(
      */
     fun disconnectCamera(cameraId: String) {
         val cameras = _connectedCameras.value.toMutableMap()
-        cameras[cameraId]?.disconnect()
+        cameras[cameraId]?.let { disconnectTracked(it) }
         cameras.remove(cameraId)
         _connectedCameras.value = cameras
     }
@@ -263,7 +285,7 @@ class UsbDeviceManager @Inject constructor(
      * Disconnect all cameras.
      */
     fun disconnectAll() {
-        _connectedCameras.value.values.forEach { it.disconnect() }
+        _connectedCameras.value.values.forEach { disconnectTracked(it) }
         _connectedCameras.value = emptyMap()
     }
 
@@ -281,7 +303,7 @@ class UsbDeviceManager @Inject constructor(
             ?.key
 
         disconnectedId?.let {
-            cameras[it]?.disconnect()
+            cameras[it]?.let { c -> disconnectTracked(c) }
             cameras.remove(it)
             _connectedCameras.value = cameras
         }
