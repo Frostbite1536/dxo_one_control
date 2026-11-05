@@ -64,6 +64,8 @@ class UsbDeviceManager @Inject constructor(
     private val releasing = java.util.concurrent.ConcurrentHashMap<String, CameraConnection>()
 
     private fun disconnectTracked(camera: CameraConnection) {
+        // Device nodes change on re-plug, so purge entries whose release has finished.
+        releasing.values.removeIf { it.awaitReleased(0) }
         releasing[camera.device.deviceName] = camera
         camera.disconnect()
     }

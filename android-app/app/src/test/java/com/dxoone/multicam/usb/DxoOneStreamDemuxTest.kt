@@ -267,6 +267,20 @@ class DxoOneStreamDemuxTest {
     }
 
     @Test
+    fun severalTimedOutRequestsOnABackloggedCameraWithoutIds() {
+        for (n in 0..3) {
+            register(n)
+            demux.unregisterRequest(n)
+            demux.markRequestTimedOut(n)
+        }
+        val go = register(4)
+        for (n in 0..3) demux.feed(rpcMessage("""{"jsonrpc":"2.0","result":"reply-$n"}"""))
+        assertEquals(0, go.size)
+        demux.feed(rpcMessage("""{"jsonrpc":"2.0","result":"reply-go"}"""))
+        assertEquals(1, go.size)
+    }
+
+    @Test
     fun replyWithNoIdAndNothingPendingIsDropped() {
         demux.feed(rpcMessage("""{"result":{}}"""))
         assertTrue(logs.any { it.contains("without id") })

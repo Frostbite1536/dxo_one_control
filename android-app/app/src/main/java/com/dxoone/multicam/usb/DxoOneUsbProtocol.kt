@@ -317,8 +317,13 @@ class DxoOneUsbProtocol(
      * gets one CLEAR_FEATURE(ENDPOINT_HALT) and one retry.
      */
     private fun writeFully(data: ByteArray) {
+        val started = System.nanoTime()
         var n = connection.bulkTransfer(endpointOut, data, data.size, DxoOneConstants.USB_TIMEOUT_MS)
-        if (n < 0 && clearHalt(endpointOut)) {
+        val elapsedMs = (System.nanoTime() - started) / 1_000_000
+        // Only an immediate failure looks like a halt. After a timeout part of a multi-packet
+        // frame may already have gone out, and clearing an endpoint that isn't halted resets
+        // its data toggle, so don't clear-and-resend then.
+        if (n < 0 && elapsedMs < DxoOneConstants.DEAD_DEVICE_FAST_FAIL_MS && clearHalt(endpointOut)) {
             Log.w(TAG, "[$name] bulk-OUT halted; cleared, retrying")
             n = connection.bulkTransfer(endpointOut, data, data.size, DxoOneConstants.USB_TIMEOUT_MS)
         }

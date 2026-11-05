@@ -64,13 +64,12 @@ class DxoOneStreamDemux(
 
     // Id-less replies (fallback for a camera that doesn't echo ids). Same rule as JS:
     // - never attributed once the camera has sent any reply with an id;
-    // - after a timeout, the next id-less reply is assumed to be the late reply to the
-    //   timed-out request and is dropped. If that drop then makes the current request time
-    //   out, that timeout does not re-arm the flag, so a reply that is truly lost costs at
-    //   most one extra request and the transport recovers.
+    // - each timeout means one late id-less reply may still arrive; that many id-less
+    //   replies are dropped. A timeout caused by such a drop is not counted again, so
+    //   replies that are truly lost cost a bounded number of extra requests.
     private val idlessLock = Any()
     private var sawReplyId = false              // guarded by idlessLock
-    private var expectLateIdless = false        // guarded by idlessLock
+    private var lateIdlessExpected = 0          // guarded by idlessLock
     private var droppedIdlessForId: Int? = null // guarded by idlessLock
 
     /** Call when request [id] timed out: its reply may still arrive later. */
@@ -80,7 +79,7 @@ class DxoOneStreamDemux(
                 // It timed out because we dropped its (id-less) reply; don't re-arm.
                 droppedIdlessForId = null
             } else if (!sawReplyId) {
-                expectLateIdless = true
+                lateIdlessExpected++
             }
         }
     }
@@ -239,8 +238,8 @@ class DxoOneStreamDemux(
         val dropReason = synchronized(idlessLock) {
             when {
                 sawReplyId -> "camera uses ids"
-                expectLateIdless -> {
-                    expectLateIdless = false
+                lateIdlessExpected > 0 -> {
+                    lateIdlessExpected--
                     droppedIdlessForId = synchronized(pendingLock) { pending.keys.singleOrNull() }
                     "late reply to a timed-out request"
                 }

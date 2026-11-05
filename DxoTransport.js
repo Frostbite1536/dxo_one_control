@@ -313,12 +313,12 @@ export class DxoTransport {
         this._inflight = null;
         // Id-less replies (fallback for a camera that doesn't echo ids):
         // - never attributed once the camera has sent any reply with an id;
-        // - after a timeout, the next id-less reply is assumed to be the late reply to
-        //   the timed-out request and is dropped. If that drop then makes the current
-        //   request time out, that timeout does not re-arm the flag, so a reply that is
-        //   truly lost costs at most one extra request and the transport recovers.
+        // - each timeout means one late id-less reply may still arrive; that many id-less
+        //   replies are dropped. A timeout caused by such a drop is not counted again,
+        //   so replies that are truly lost cost a bounded number of extra requests and
+        //   the transport recovers.
         this._sawReplyId = false;
-        this._expectLateIdless = false;
+        this._lateIdlessExpected = 0;
         this._requestChain = Promise.resolve();
         this._writeChain = Promise.resolve();
         this._running = false;
@@ -418,7 +418,7 @@ export class DxoTransport {
 
         return new Promise((resolve, reject) => {
             const timer = setTimeout(() => {
-                if (!entry.droppedIdless) this._expectLateIdless = true;
+                if (!entry.droppedIdless) this._lateIdlessExpected++;
                 settle(reject, new TransportError(`${method} timed out after ${timeout} ms`, 'timeout'));
             }, timeout);
 
@@ -543,8 +543,8 @@ export class DxoTransport {
             console.debug(`[${this.name}] dropped reply without id (camera uses ids)`, message);
             return;
         }
-        if (this._expectLateIdless) {
-            this._expectLateIdless = false;
+        if (this._lateIdlessExpected > 0) {
+            this._lateIdlessExpected--;
             if (inflight) inflight.droppedIdless = true;
             console.debug(`[${this.name}] dropped reply without id (late reply to a timed-out request)`, message);
             return;

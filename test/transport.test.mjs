@@ -230,6 +230,25 @@ test('transport: a camera without ids recovers after a reply is lost entirely', 
     t.close(); cam.unplug();
 });
 
+test('transport: several timed-out requests on a backlogged camera without ids', async () => {
+    const backlog = [];
+    const cam = new FakeDxoOne({
+        handlers: {
+            slow: (req, c) => backlog.push(req.params.n),          // answered later, in order
+            go: (req, c) => {
+                backlog.splice(0).forEach(n => c.queueMessage({ result: `reply-${n}` }));
+                c.queueMessage({ result: 'reply-go' });
+            },
+        },
+    });
+    const t = await openTransport(cam);
+    for (const n of [0, 1, 2, 3]) {
+        await assert.rejects(t.request('slow', { n }, { timeoutMs: 10 }), e => e.code === 'timeout');
+    }
+    assert.equal((await t.request('go', undefined, { timeoutMs: 200 })).result, 'reply-go');
+    t.close(); cam.unplug();
+});
+
 test('transport: once the camera has sent ids, id-less replies are not attributed', async () => {
     const cam = new FakeDxoOne({
         handlers: {
