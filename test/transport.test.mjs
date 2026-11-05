@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { DxoStreamDemux, DxoTransport, TransportError, encodeRpcRequest, METADATA_INIT_SIGNATURE } from '../DxoTransport.js';
 import DXOONE from '../dxo1usb.js';
-import { CameraManager } from '../CameraManager.js';
+import { CameraManager, CaptureBarrier, triggerSpreadMs } from '../CameraManager.js';
 import { FakeDxoOne, fakeUsbBackend, frameMessage, frameJpeg, makeJpeg, splitPackets } from './fakeDxoOne.mjs';
 
 // Silence the transport's diagnostic logging during tests.
@@ -472,5 +472,71 @@ test('CameraManager: cameras without a serial number get stable, unique ids', as
     assert.notEqual(first.id, second.id);
     assert.ok(!/\d{10,}/.test(first.id), 'id must not contain a timestamp');
     assert.equal(manager.cameraCount, 2);
+    await manager.dispose();
+});
+
+test('CaptureBarrier: releases together; a timeout releases everyone still waiting at once', async () => {
+    const b = new CaptureBarrier(3, 1000);
+    const t0 = performance.now();
+    const all = Promise.all([b.arriveAndAwait(), sleep(30).then(() => b.arriveAndAwait()), sleep(60).then(() => b.leave())]);
+    const [x, y] = await all;
+    assert.equal(x, true); assert.equal(y, true);
+    assert.ok(performance.now() - t0 < 200);
+
+    const broken = new CaptureBarrier(3, 80);           // third party never shows up
+    const start = performance.now();
+    const times = await Promise.all([0, 40].map(d => sleep(d).then(() => broken.arriveAndAwait()).then(ok => [ok, performance.now() - start])));
+    assert.deepEqual(times.map(([ok]) => ok), [false, false]);
+    assert.ok(Math.abs(times[0][1] - times[1][1]) < 30, `released apart: ${times.map(t => t[1])}`);
+    assert.equal(await broken.arriveAndAwait(), false);  // late arrival doesn't wait
+});
+
+test('CameraManager: parallel capture holds busy and idle cameras at one start line', async () => {
+    const writtenAt = {};
+    const slow = new Set();                              // serials whose next status reply is slow
+    const make = (serial) => {
+        return new FakeDxoOne({
+            serialNumber: serial,
+            handlers: {
+                dxo_camera_status_get: (req, c) => {
+                    if (slow.delete(serial)) c.later(80, () => c.queueMessage({ id: req.id, result: {} }));
+                    else c.queueMessage({ id: req.id, result: {} });
+                },
+                dxo_photo_take: (req, c) => { writtenAt[serial] = performance.now(); c.queueMessage({ id: req.id, result: 'ok' }); },
+            },
+        });
+    };
+    const cams = [make('P1'), make('P2'), make('P3')];
+    const manager = new CameraManager({ usbBackend: fakeUsbBackend(cams), barrierTimeoutMs: 1000 });
+    for (let i = 0; i < 3; i++) await manager.connectCamera();
+
+    // Camera P2 is busy with a slow command when the capture starts.
+    slow.add('P2');
+    const busy = manager.getCamera('P2').transferOutRPC('dxo_camera_status_get');
+    let reported;
+    manager.onCaptureComplete = (results, total, spread) => { reported = spread; };
+    const results = await manager.captureAll();
+    await busy;
+
+    assert.ok(results.every(r => r.status === 'success'));
+    const times = Object.values(writtenAt);
+    assert.ok(Math.max(...times) - Math.min(...times) < 30, `writes spread ${Math.max(...times) - Math.min(...times)} ms`);
+    assert.equal(typeof reported, 'number');
+    assert.ok(reported < 30);
+    assert.equal(triggerSpreadMs([{ status: 'success', triggeredAt: 5 }]), null);
+    await manager.dispose();
+});
+
+test('CameraManager: a camera that fails before the start line does not hold the others', async () => {
+    const ok = new FakeDxoOne({ serialNumber: 'F1' });
+    const gone = new FakeDxoOne({ serialNumber: 'F2' });
+    const manager = new CameraManager({ usbBackend: fakeUsbBackend([ok, gone]), barrierTimeoutMs: 5000 });
+    await manager.connectCamera();
+    await manager.connectCamera();
+    manager.getCamera('F2').markDisconnected();          // fails immediately on takePhoto
+    const t0 = performance.now();
+    const results = await manager.captureAll();
+    assert.ok(performance.now() - t0 < 1000, 'must not wait for the barrier timeout');
+    assert.deepEqual(results.map(r => r.status), ['success', 'error']);
     await manager.dispose();
 });

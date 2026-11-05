@@ -33,10 +33,78 @@ const ERROR_MAX_CAMERAS_REACHED = `Maximum ${MAX_CAMERAS} cameras supported. Dis
  * @property {string} cameraId - ID of the camera
  * @property {string} cameraName - Display name of the camera
  * @property {'success' | 'error'} status - Result status
- * @property {number} timestamp - When the capture completed
+ * @property {number} timestamp - performance.now() when the capture was issued
+ * @property {number} [triggeredAt] - performance.now() when the dxo_photo_take frame finished
+ *   writing to USB (host-side proxy for the trigger time; not the shutter time)
  * @property {Object} [result] - Camera response on success
  * @property {string} [error] - Error message on failure
  */
+
+/**
+ * One-shot start line for a parallel capture (same rules as the Android CaptureBarrier):
+ * each camera either arrives (its request is next in line and only the write is left) or
+ * leaves (it won't send). When all have done so, every waiting camera is released together.
+ * The deadline is shared: at most `timeoutMs` after the first arrival the barrier breaks,
+ * releasing everyone waiting; later arrivals don't wait.
+ */
+export class CaptureBarrier {
+    constructor(parties, timeoutMs) {
+        this._remaining = parties;
+        this._timeoutMs = timeoutMs;
+        this._timer = null;
+        this._done = false;
+        this.broken = false;
+        this._released = new Promise(resolve => { this._release = resolve; });
+        if (parties <= 0) this._finish();
+    }
+
+    get isReleased() {
+        return this._done;
+    }
+
+    /** @returns {Promise<boolean>} true if every party arrived or left before the deadline */
+    arriveAndAwait() {
+        this._countDown();
+        if (!this._done && this._timer === null) {
+            this._timer = setTimeout(() => {
+                this.broken = true;
+                this._finish();
+            }, this._timeoutMs);
+        }
+        return this._released.then(() => !this.broken);
+    }
+
+    leave() {
+        this._countDown();
+    }
+
+    _countDown() {
+        this._remaining--;
+        if (this._remaining <= 0) this._finish();
+    }
+
+    _finish() {
+        if (this._done) return;
+        this._done = true;
+        if (this._timer !== null) clearTimeout(this._timer);
+        this._release();
+    }
+}
+
+/**
+ * Host-side trigger spread of a capture: max - min of `triggeredAt` over successful
+ * cameras, in ms, or null with fewer than two. Not a shutter-sync measurement.
+ *
+ * @param {CaptureResult[]} results
+ * @returns {number|null}
+ */
+export function triggerSpreadMs(results) {
+    const times = results
+        .filter(r => r.status === 'success' && typeof r.triggeredAt === 'number')
+        .map(r => r.triggeredAt);
+    if (times.length < 2) return null;
+    return Math.max(...times) - Math.min(...times);
+}
 
 /**
  * CameraManager - Manages multiple DXO One camera connections
@@ -72,6 +140,9 @@ export class CameraManager {
 
         // Sync mode for capture operations
         this.syncMode = 'parallel';
+
+        // Parallel capture: how long cameras wait for each other at the start line
+        this.barrierTimeoutMs = options.barrierTimeoutMs ?? 300;
 
         // Callbacks
         this.onCameraChange = options.onCameraChange || (() => {});
@@ -302,10 +373,12 @@ export class CameraManager {
 
         const totalTime = performance.now() - startTime;
 
-        // Log sync timing for debugging (INV-MULTI-004)
-        console.log(`[CameraManager] Capture completed in ${totalTime.toFixed(1)}ms (mode: ${this.syncMode})`);
+        // INV-MULTI-004: log what we can actually measure (host-side trigger spread)
+        const spread = triggerSpreadMs(results);
+        console.log(`[CameraManager] Capture completed in ${totalTime.toFixed(1)}ms (mode: ${this.syncMode})` +
+            (spread !== null ? `, trigger spread (host-side) ${spread.toFixed(2)}ms` : ''));
 
-        this.onCaptureComplete(results, totalTime);
+        this.onCaptureComplete(results, totalTime, spread);
         return results;
     }
 
@@ -318,15 +391,28 @@ export class CameraManager {
     async _captureParallel() {
         const cameras = this.connectedCameras;
 
-        // INV-MULTI-003: Use Promise.allSettled for partial failure handling
+        // Hold every camera at a barrier just before its write, so the writes start
+        // together even if some cameras' queues were busy (bounded by barrierTimeoutMs).
+        const barrier = new CaptureBarrier(cameras.length, this.barrierTimeoutMs);
+
+        // INV-MULTI-003: each camera's failure becomes an error result (never rejects)
         const capturePromises = cameras.map(camera => {
             const timestamp = performance.now();
-            return camera.takePhoto()
+            let arrived = false;
+            let triggeredAt;
+            return camera.takePhoto({
+                beforeWrite: () => {
+                    arrived = true;
+                    return barrier.arriveAndAwait();
+                },
+                onWritten: t => { triggeredAt = t; },
+            })
                 .then(result => ({
                     cameraId: camera.id,
                     cameraName: camera.displayName,
                     status: 'success',
                     timestamp,
+                    triggeredAt,
                     result,
                 }))
                 .catch(error => ({
@@ -335,7 +421,11 @@ export class CameraManager {
                     status: 'error',
                     timestamp,
                     error: error.message,
-                }));
+                }))
+                .finally(() => {
+                    // Failed before reaching the barrier: don't hold the others.
+                    if (!arrived) barrier.leave();
+                });
         });
 
         return await Promise.all(capturePromises);
@@ -353,13 +443,15 @@ export class CameraManager {
 
         for (const camera of cameras) {
             const timestamp = performance.now();
+            let triggeredAt;
             try {
-                const result = await camera.takePhoto();
+                const result = await camera.takePhoto({ onWritten: t => { triggeredAt = t; } });
                 results.push({
                     cameraId: camera.id,
                     cameraName: camera.displayName,
                     status: 'success',
                     timestamp,
+                    triggeredAt,
                     result,
                 });
             } catch (error) {
