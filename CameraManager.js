@@ -68,6 +68,7 @@ export class CaptureBarrier {
         if (!this._done && this._timer === null) {
             this._timer = setTimeout(() => {
                 this.broken = true;
+                console.warn(`[CaptureBarrier] not every camera arrived within ${this._timeoutMs} ms; sending anyway`);
                 this._finish();
             }, this._timeoutMs);
         }
@@ -373,8 +374,9 @@ export class CameraManager {
 
         const totalTime = performance.now() - startTime;
 
-        // INV-MULTI-004: log what we can actually measure (host-side trigger spread)
-        const spread = triggerSpreadMs(results);
+        // INV-MULTI-004: log what we can actually measure (host-side trigger spread). In
+        // sequential mode cameras fire one after another on purpose: no spread to report.
+        const spread = this.syncMode === 'parallel' ? triggerSpreadMs(results) : null;
         console.log(`[CameraManager] Capture completed in ${totalTime.toFixed(1)}ms (mode: ${this.syncMode})` +
             (spread !== null ? `, trigger spread (host-side) ${spread.toFixed(2)}ms` : ''));
 

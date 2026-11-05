@@ -44,22 +44,15 @@ You are conducting a performance review of **dxo1control**, a tool for controlli
 
 **Example Issue**:
 ```javascript
-// Bad: Sequential operations
-async function getCameraInfo() {
-  const battery = await getBattery();    // USB transfer 1
-  const model = await getModel();        // USB transfer 2
-  const firmware = await getFirmware();  // USB transfer 3
-  return { battery, model, firmware };
-}
+// Bad: polling status on a timer while live view is streaming (each request
+// competes with video on the same bulk-IN endpoint)
+setInterval(() => camera.getStatus(), 500);
 
-// Better: Batch if protocol allows
-async function getCameraInfo() {
-  const response = await getBatchedInfo([
-    COMMANDS.BATTERY,
-    COMMANDS.MODEL,
-    COMMANDS.FIRMWARE
-  ]);
-  return parseResponse(response);
+// Better: one dxo_camera_status_get returns the status fields (including battery)
+// in a single reply; fetch it on demand and cache it
+async function getCameraInfo(camera) {
+  const status = await camera.transferOutRPC('dxo_camera_status_get');
+  return status.result;
 }
 ```
 

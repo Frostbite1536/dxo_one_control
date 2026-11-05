@@ -20,6 +20,7 @@ fun rpcPacket(json: String): ByteArray =
  *   bulk-IN after [replyDelayMs] (immediately when 0).
  * - [dead]: every transfer fails immediately, control transfers too.
  * - [halted]: bulk-IN fails immediately until a CLEAR_FEATURE(ENDPOINT_HALT) succeeds.
+ * - [outHalted]: bulk-OUT fails immediately until CLEAR_FEATURE(ENDPOINT_HALT) on the OUT endpoint.
  * - [shortWrite]: bulk-OUT reports one byte less than asked.
  */
 class FakeUsbBulkIo(
@@ -38,6 +39,7 @@ class FakeUsbBulkIo(
     val writes = CopyOnWriteArrayList<ByteArray>()
     val dead = AtomicBoolean(false)
     val halted = AtomicBoolean(false)
+    val outHalted = AtomicBoolean(false)
     @Volatile var shortWrite = false
 
     val inCalls = AtomicInteger()
@@ -73,7 +75,7 @@ class FakeUsbBulkIo(
     }
 
     override fun bulkOut(data: ByteArray, length: Int, timeoutMs: Int): Int {
-        if (dead.get()) return -1
+        if (dead.get() || outHalted.get()) return -1
         val started = System.nanoTime()
         val bytes = data.copyOf(length)
         writes += bytes
@@ -113,7 +115,11 @@ class FakeUsbBulkIo(
         // CLEAR_FEATURE(ENDPOINT_HALT): host-to-device | standard | endpoint
         if (requestType == 0x02 && request == 0x01 && value == 0) {
             haltClears += index
-            halted.set(false)
+            when (index) {
+                inEndpointAddress -> halted.set(false)
+                outEndpointAddress -> outHalted.set(false)
+                else -> return -1
+            }
             return 0
         }
         return -1

@@ -9,13 +9,17 @@ import org.junit.Test
 
 class MultiCaptureResultTest {
 
-    private fun result(vararg cameras: CaptureResult, error: String? = null) = MultiCaptureResult(
+    private fun result(
+        vararg cameras: CaptureResult,
+        error: String? = null,
+        mode: CaptureMode = CaptureMode.PARALLEL
+    ) = MultiCaptureResult(
         sessionId = "s",
         totalCameras = cameras.size,
         results = cameras.toList(),
         allSucceeded = cameras.isNotEmpty() && cameras.all { it.success },
         totalTimeMs = 900,
-        mode = CaptureMode.PARALLEL,
+        mode = mode,
         error = error
     )
 
@@ -58,5 +62,12 @@ class MultiCaptureResultTest {
         val r = result(failed("a", null), error = "No cameras ready for capture")
         assertEquals("Capture failed: No cameras ready for capture", r.summaryText())
         assertTrue(r.results.none { it.success })
+    }
+
+    @Test
+    fun sequentialModeReportsNoSpread() {
+        val r = result(ok("a", 1_000_000), ok("b", 200_000_000), mode = CaptureMode.SEQUENTIAL)
+        assertNull(r.triggerSpreadNanos)
+        assertNull(r.triggerSpreadText)
     }
 }

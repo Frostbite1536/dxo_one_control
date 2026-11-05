@@ -394,7 +394,7 @@ No invariant violations detected.
 - **ID**: INV-DATA-004
 - **Rule**: Battery response must be 0-100 or throw error
 - **Rationale**: Invalid values could break UI or mislead users
-- **Enforcement**: Validate response byte is <= 100
+- **Enforcement**: Validate the battery field of the `dxo_camera_status_get` reply (`result.battery` in the JS client) is a number in 0–100
 - **Category**: Data Integrity
 
 ### Decision: ⚠️ Discuss

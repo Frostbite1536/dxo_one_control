@@ -540,3 +540,31 @@ test('CameraManager: a camera that fails before the start line does not hold the
     assert.deepEqual(results.map(r => r.status), ['success', 'error']);
     await manager.dispose();
 });
+
+test('transport: onWritten fires after the frame is written and before the reply', async () => {
+    const cam = new FakeDxoOne({
+        handlers: { slowreply: (req, c) => c.later(40, () => c.queueMessage({ id: req.id, result: 'r' })) },
+    });
+    const t = await openTransport(cam);
+    let seenAtWrite = null;
+    let resolved = false;
+    const pending = t.request('slowreply', undefined, {
+        onWritten: () => { seenAtWrite = { frameSent: cam.requests.length === 1, resolved }; },
+    }).then(r => { resolved = true; return r; });
+    await pending;
+    assert.deepEqual(seenAtWrite, { frameSent: true, resolved: false });
+    t.close(); cam.unplug();
+});
+
+test('CameraManager: sequential capture reports no trigger spread', async () => {
+    const manager = new CameraManager({ usbBackend: fakeUsbBackend([new FakeDxoOne({ serialNumber: 'S1' }), new FakeDxoOne({ serialNumber: 'S2' })]) });
+    await manager.connectCamera();
+    await manager.connectCamera();
+    manager.setSyncMode('sequential');
+    let reported = 'unset';
+    manager.onCaptureComplete = (results, total, spread) => { reported = spread; };
+    await manager.captureAll();
+    assert.equal(reported, null);
+    await manager.dispose();
+});
+

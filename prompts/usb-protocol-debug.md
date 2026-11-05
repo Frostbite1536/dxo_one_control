@@ -328,7 +328,9 @@ console.log('All available devices:', allDevices);
 // Claim interface before transfer
 await device.open();
 await device.selectConfiguration(1);
-await device.claimInterface(0);  // Usually interface 0
+await device.claimInterface(device.configuration.interfaces[0].interfaceNumber);
+await device.claimInterface(device.configuration.interfaces[1].interfaceNumber);
+await device.selectAlternateInterface(1, 1);  // as dxo1usb.js / CameraDevice.js do
 
 // Then transfer
 await device.transferOut(endpointOut, message);
@@ -348,11 +350,12 @@ await device.transferOut(endpointOut, message);
 
 **Solution**:
 ```javascript
-// Ensure camera is awake
-await sendWakeupCommand();
+// Requests time out via DxoTransport (5 s default, 40 s for dxo_photo_take).
+// Pass a longer timeout for a slow command instead of waiting forever:
+const response = await transport.request('dxo_all_settings_get', undefined, { timeoutMs: 10000 });
 
-// Increase timeout
-const response = await receiveUSBWithTimeout(10000);  // 10s timeout
+// Check the handshake: the camera sends an init signature after open and expects an
+// ACK (DxoTransport.open does this). Log drops with DevTools at "Verbose" level.
 ```
 
 ---
@@ -369,14 +372,16 @@ const response = await receiveUSBWithTimeout(10000);  // 10s timeout
 
 **Solution**:
 ```javascript
-// Read full response size
-const EXPECTED_SIZE = 64;  // Adjust based on protocol
-const result = await device.transferIn(endpointIn, EXPECTED_SIZE);
-
-// Verify size matches
-if (result.data.byteLength !== EXPECTED_SIZE) {
-  console.warn('Partial response received');
-}
+// Don't assume one transferIn holds one reply. Reads are 512-byte packets
+// (MAX_PACKETSIZE); short reads are normal; a reply can span several packets and
+// can be preceded by the init signature or by live-view JPEG data. Feed every
+// packet to the demultiplexer, which reassembles replies by their length field:
+const demux = new DxoStreamDemux({
+  onMessage: msg => console.log('reply', msg),
+  onDrop: (reason, detail) => console.warn('dropped', reason, detail),
+});
+const result = await device.transferIn(endpointIn, MAX_PACKETSIZE);
+demux.push(new Uint8Array(result.data.buffer, result.data.byteOffset, result.data.byteLength));
 ```
 
 ---
