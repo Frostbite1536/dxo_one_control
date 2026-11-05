@@ -49,9 +49,22 @@ data class JsonRpcResponse(
     val error: JsonRpcError? = null,
 
     @SerializedName("method")
-    val method: String? = null
+    val method: String? = null,
+
+    /**
+     * True when the transport matched this message to the request it answers (by id, or
+     * via the single-in-flight fallback when the camera omits the id). Never serialized;
+     * a response parsed directly with [fromJson] is unmatched.
+     */
+    @Transient
+    val matched: Boolean = false
 ) {
-    val isSuccess: Boolean get() = error == null
+    /**
+     * A response only counts as success when it was matched to our request and carries no
+     * error. Notifications such as dxo_setting_applied are never matched, so they can no
+     * longer be mistaken for the real reply.
+     */
+    val isSuccess: Boolean get() = matched && method == null && error == null
     val isNotification: Boolean get() = method != null
 
     companion object {

@@ -4,11 +4,11 @@ This roadmap outlines the planned development phases for dxo1control. The projec
 
 ---
 
-## Phase 1: Foundation & Documentation ✅ (Current Phase)
+## Phase 1: Foundation & Documentation (largely complete)
 
 **Goal**: Establish Safe Vibe Coding infrastructure and comprehensive documentation for the existing codebase.
 
-**Status**: In Progress
+**Status**: Mostly done; remaining items are API docs and usage examples
 
 ### Features Included
 
@@ -22,7 +22,12 @@ This roadmap outlines the planned development phases for dxo1control. The projec
 - [x] **prompts/engineering.md** - Customized coding guidelines
 - [x] **Multi-camera support** - CameraManager, CameraDevice (early delivery from Phase 4)
 - [x] **Multi-camera UI** - multi-camera.html interface
-- [ ] **CI/CD Pipeline** - Automated testing and validation
+- [x] **Live view** - single and multi-camera (`dxo1usb.js`, `CameraDevice.js`)
+- [x] **Settings control** - ISO, aperture, shutter, exposure, etc. through `setSettings`
+- [x] **Shared USB transport** - `DxoTransport.js`: one reader, serialized id-matched RPC, timeouts
+- [x] **Transport tests** - `node:test` suite with a fake device (`test/`)
+- [x] **Android multi-camera app** - `android-app/` (image download and gallery not done; see Long-term Vision)
+- [x] **CI/CD Pipeline** - `ci.yml`: JS syntax + tests, structure check, Android build / unit tests / lint
 - [ ] **API Documentation** - JSDoc comments and generated docs
 - [ ] **Usage Examples** - Code samples and tutorials
 
@@ -33,7 +38,7 @@ Multi-camera support has been implemented ahead of schedule (originally planned 
 - **CameraManager.js** - Manages up to 4 cameras simultaneously
 - **CameraDevice.js** - Per-camera state and communication
 - **multi-camera.html** - Web UI for multi-camera control
-- **Synchronized capture** - Parallel (~50ms) or sequential modes
+- **Synchronized capture** - Parallel (best effort, variance unmeasured) or sequential modes
 - **New invariants** - INV-MULTI-001 through INV-MULTI-004
 
 Use cases enabled:
@@ -46,16 +51,16 @@ Use cases enabled:
 
 - Lightning connector support
 - Native desktop application
-- Automated testing suite (comes in Phase 2)
 - Performance optimizations
 - Advanced camera features
-- Mobile app support
+
+(Originally this list also excluded an automated test suite and mobile app support; a transport test suite and the Android app have since been delivered ahead of schedule.)
 
 ### Success Criteria
 
 - All existing code is documented
 - Architecture and invariants are clearly defined
-- CI pipeline runs successfully
+- CI pipeline runs successfully (done)
 - Contributors have clear guidelines
 - Demo site is stable and accessible
 
@@ -65,16 +70,17 @@ Use cases enabled:
 
 **Goal**: Establish comprehensive testing, improve code quality, and ensure reliability.
 
-**Status**: Planned
+**Status**: In progress (transport tests and CI done; coverage, lint and docs remain)
 
 ### Features Included
 
 - **Test Suite Setup**
-  - Unit tests for USB communication functions
-  - Integration tests for camera command/response flow
-  - Tests for DNG processing utilities
-  - Browser compatibility tests
-  - Mock USB device for testing
+  - [x] Unit tests for USB framing / demux and transport (`test/transport.test.mjs`)
+  - [x] Integration tests for camera command/response flow (against `test/fakeDxoOne.mjs`)
+  - [x] Mock USB device for testing (`fakeDxoOne.mjs`; Android has `DxoOneStreamDemuxTest`)
+  - [ ] Tests for DNG processing utilities
+  - [ ] Browser compatibility tests
+  - [ ] Validation on real hardware (no fix has been run on a real camera yet)
 
 - **Code Quality Improvements**
   - ESLint/Prettier configuration
@@ -85,7 +91,7 @@ Use cases enabled:
 
 - **Enhanced Error Recovery**
   - Auto-reconnect on disconnect
-  - Command retry logic
+  - Command retry logic (per-request timeouts and fatal-error handling already exist)
   - Better error messages
   - State recovery mechanisms
 
@@ -102,12 +108,11 @@ Use cases enabled:
 - Lightning connector support
 - GUI improvements
 - Performance optimizations
-- Multi-camera support
 
 ### Success Criteria
 
-- Test coverage ≥ 80%
-- All CI checks pass
+- Test coverage ≥ 80% (not measured)
+- All CI checks pass (done)
 - Zero known critical bugs
 - All public APIs documented
 - Contributing guide available
@@ -123,11 +128,11 @@ Use cases enabled:
 ### Features Included
 
 - **Enhanced Camera Control**
-  - Real-time preview/live view
-  - Advanced settings control (ISO, shutter, aperture)
+  - [x] Real-time preview/live view (delivered early)
+  - [x] Advanced settings control (ISO, shutter, aperture) (delivered early)
   - Burst mode support
   - Custom shooting modes
-  - Camera settings persistence
+  - Camera settings persistence (done in the Android app via DataStore; not in the web pages)
   - Settings presets
 
 - **Improved Post-Processing**
@@ -156,14 +161,12 @@ Use cases enabled:
 
 - Lightning connector (requires reverse engineering)
 - Native desktop app
-- Mobile app
-- Multi-camera support
 - Firmware updates
 - Video capture
 
 ### Success Criteria
 
-- Real-time preview works reliably
+- Real-time preview works reliably (implemented; unverified on hardware)
 - Batch processing handles 100+ images
 - Web UI is responsive and intuitive
 - Settings persist across sessions
@@ -236,7 +239,7 @@ Use cases enabled:
 ### Potential Future Directions
 
 1. **Mobile Support**
-   - Android app using WebUSB
+   - Android app: delivered (`android-app/`, native Kotlin on the USB host API, not WebUSB); remaining work is image download and a gallery
    - iOS app (if Lightning protocol is reverse-engineered)
    - Mobile-optimized web interface
 
@@ -270,7 +273,7 @@ Use cases enabled:
 
 ## Versioning Strategy
 
-- **v1.x**: Phase 1-2 (Foundation & Testing)
+- **v1.x**: Phase 1-2 (Foundation & Testing); `package.json` is currently 1.0.0
 - **v2.x**: Phase 3 (Enhancement & Features)
 - **v3.x**: Phase 4 (Polish & Advanced)
 - **v4.x**: Future phases (Mobile, Professional)
@@ -379,7 +382,7 @@ t usb net                        # Enable USB networking mode
 - Hybrid USB + Wi-Fi control (more than 4 cameras)
 - Mobile device control without Lightning connector
 
-**Current Implementation**: dxo1usb.js already uses JSON-RPC over USB; could be adapted for network transport.
+**Current Implementation**: `DxoTransport.js` already carries JSON-RPC over USB; a network transport could be added behind the same request interface.
 
 ### Firmware Analysis Tools
 
@@ -479,8 +482,8 @@ t usb net                        # Enable USB networking mode
 
 ---
 
-**Last Updated**: 2026-01-04
-**Document Version**: 1.2
-**Current Phase**: Phase 1 (Foundation & Documentation)
-**Early Deliveries**: Multi-camera support (from Phase 4)
+**Last Updated**: 2026-11-04
+**Document Version**: 1.3
+**Current Phase**: Phase 1 wrapping up, Phase 2 under way
+**Early Deliveries**: Multi-camera support (from Phase 4), live view and settings control (from Phase 3), Android app (from Long-term)
 **New Research**: Community discoveries integrated

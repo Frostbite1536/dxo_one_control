@@ -233,7 +233,7 @@ And list what was checked:
 - [ ] Security checks
 - [ ] Resource cleanup
 - [ ] API backward compatibility
-- [ ] All 11 invariants verified
+- [ ] All 15 invariants verified
 
 ---
 

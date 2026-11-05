@@ -13,25 +13,13 @@
     - Multi-angle product photography
     - Scientific/research capture
 */
-import { getU8AFromHexString, compareU8A, mergeU8A, getStringFromU8A, } from './u8a.js';
+import { DxoTransport } from './DxoTransport.js';
 
 // Multi-camera support classes (INV-API-001: backward compatible addition)
 export { CameraDevice } from './CameraDevice.js';
 export { CameraManager } from './CameraManager.js';
 
 const PARAMS_DEVICE_REQUEST = { filters: [{ vendorId: 0x2b8f }] };
-
-const METADATA_INIT_SIGNATURE = getU8AFromHexString('A3, BA, D1, 10, AB, CD, AB, CD, 00, 00, 00, 00, 02, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00');
-const METADATA_INIT_RESPONSE_SIGNATURE = getU8AFromHexString('A3, BA, D1, 10, DC, BA, DC, BA, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00');
-
-const RPC_HEADER = getU8AFromHexString('A3, BA, D1, 10, 17, 08, 00, 0C');
-const RPC_HEADER_TRAILER = getU8AFromHexString('00, 00, 03, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00');
-
-const JPG_METADATA_HEADER = getU8AFromHexString('A3, BA, D1, 10');
-const JPG_HEADER = getU8AFromHexString('FF, D8, FF');
-const JPG_TRAILER = getU8AFromHexString('FF, D9');
-
-const MAX_PACKETSIZE = 512;
 
 const ERROR_WEBUSB_API_NOT_SUPPORTED = 'Sorry, your browser / JS environment does not support WebUSB!\nTry running this in Chrome.';
 
@@ -58,227 +46,85 @@ async function open(usbBackend = navigator.usb) {
     inEndpoint = device.configuration.interfaces[0].alternate.endpoints[1].endpointNumber;
     outEndpoint = device.configuration.interfaces[0].alternate.endpoints[0].endpointNumber;
 
-    let seq = 0; // sequence id used for  JSON-RPC commands
-
-    await device.transferOut(outEndpoint, METADATA_INIT_RESPONSE_SIGNATURE);
-
-    // Drain any pre-existing data from the device's outbound buffer then send ACK from our app
-    // This prevents any unflushed messages from contaminating our expected messages
-    let initDrainRXBuffer = [];
-    do {
-        initDrainRXBuffer = await getRX(MAX_PACKETSIZE);
-
-        if (compareU8A(initDrainRXBuffer, METADATA_INIT_SIGNATURE)) {
-            await device.transferOut(outEndpoint, METADATA_INIT_RESPONSE_SIGNATURE);
-            break;
-        }
-    } while (initDrainRXBuffer.length > 0);
-
-
-    function getRX(byteLength = 32) {
-        return device.transferIn(inEndpoint, byteLength).then(res => new Uint8Array(res.data.buffer));
+    // All bulk transfers go through one transport: a single read pump, one RPC
+    // in flight at a time, replies matched by id, per-request timeouts.
+    const transport = new DxoTransport(device, inEndpoint, outEndpoint, {
+        onFatal: () => { stopLiveViewLocal(); },
+    });
+    try {
+        await transport.open();
+    } catch (error) {
+        transport.close('Handshake failed');
+        try { await device.close(); } catch (_) { /* already closed */ }
+        throw error;
     }
 
-    async function transferInJPEG() {
-        let metadata = await getRX(MAX_PACKETSIZE);
+    const transferOutRPC = (method, params, options) => transport.request(method, params, options);
 
-        if (compareU8A(metadata, METADATA_INIT_SIGNATURE)) {
-            await device.transferOut(outEndpoint, METADATA_INIT_RESPONSE_SIGNATURE);
-            metadata = await getRX(MAX_PACKETSIZE);
-        }
+    const bindApplySetting = baseParams => (async data => {
+        const params = { ...baseParams };
 
-        let jpgResponse = new Uint8Array(metadata.length);
-
-        let offset = 0;
-        if (jpgResponse.indexOfMulti(JPG_METADATA_HEADER) >= 0) {
-            offset = metadata.length - 32;
-            jpgResponse.set(metadata.slice(32));
-        } else {
-            offset = 0;
-            jpgResponse.set(metadata);
-        }
-
-        let payload;
-        do {
-            payload = await getRX(MAX_PACKETSIZE);
-
-            // Might be clobbered with other USB messages
-            // Drop any bad frames due to msg collision
-            // Keep resizing to fit the JPEG frame
-            const diffLength = jpgResponse.length - (offset + payload.length);
-            if (diffLength < 0) {
-                let newJpgResponse = new Uint8Array(offset + payload.length);
-                newJpgResponse.set(jpgResponse);
-                jpgResponse = newJpgResponse;
-            }
-
-            jpgResponse.set(payload, offset);
-
-            offset += payload.length;
-        } while (payload.indexOfMulti(JPG_TRAILER) < 0);
-
-        return jpgResponse;
-    }
-
-    async function transferInRPC() {
-        let metadata = await getRX(MAX_PACKETSIZE);
-
-        if (compareU8A(metadata, METADATA_INIT_SIGNATURE)) {
-            await device.transferOut(outEndpoint, METADATA_INIT_RESPONSE_SIGNATURE);
-            metadata = await getRX(MAX_PACKETSIZE);
-        }
-
-        const rpcResponseSize = metadata[8] + (metadata[9] << 8); // little-endian json-rpc response message size
-
-        if (rpcResponseSize === 0) return;
-
-        let rpcResponse = new Uint8Array(rpcResponseSize);
-        rpcResponse.set(metadata.slice(32));
-        let offset = metadata.length - 32;
-
-        let payload;
-        do {
-            if (offset === rpcResponseSize) break;
-
-            payload = await getRX(MAX_PACKETSIZE);
-            if (compareU8A(payload, METADATA_INIT_SIGNATURE)) {
-                await device.transferOut(outEndpoint, METADATA_INIT_RESPONSE_SIGNATURE);
-                break;
-            }
-
-            // Drop all bad frames
-            try {
-                rpcResponse.set(payload, offset);
-            } catch (e) {
-                return null;
-            }
-
-            offset += payload.length;
-        } while (offset < rpcResponseSize);
-
-        const decodedString = getStringFromU8A(rpcResponse).replace(/\x00/g, '').trim();
-
-        try {
-            // Check if the device forced a USB buffer flush!
-            // If so, re-run the transferIn!
-            const res = JSON.parse(decodedString);
-            if (res.method === 'dxo_usb_flush_forced') {
-                return await transferInRPC();
-            } else {
-                return res;
-            }
-        } catch (e) {
-            console.log('Failed to parse:');
-            console.log(decodedString);
-            return null;
-        }
-    }
-
-    async function transferOutRPC(method, params) {
-        await device.transferOut(outEndpoint, METADATA_INIT_RESPONSE_SIGNATURE);
-
-        const payload = new TextEncoder().encode(JSON.stringify({
-            "jsonrpc": "2.0",
-            "id": seq,
-            method,
-            ...(params ? { params } : {}),
-        }) + '\x00');
-
-        seq++;
-
-        const msgDetails = mergeU8A([
-            // Little endian message size
-            payload.length % (1 << 8),
-            Math.floor(payload.length / (1 << 8))
-        ], RPC_HEADER_TRAILER);
-
-        const msgHeader = mergeU8A(RPC_HEADER, msgDetails);
-        const msgWhole = mergeU8A(msgHeader, payload);
-
-        await device.transferOut(outEndpoint, msgWhole);
-
-        return await transferInRPC();
-    }
-
-    const bindApplySetting = params => (async data => {
-        const commandSeq = seq;
-
-        if (params.type === 'copyright' || params.type === 'artist') {
-            params.param = data;
+        // Setters that take a value fall back to their default param when called
+        // without one (instead of sending no param / "NaN").
+        if (data === undefined) {
+            // keep baseParams.param
+        } else if (params.type === 'copyright' || params.type === 'artist') {
+            params.param = String(data);
         } else if (params.type === 'mf_inv_distance') {
             // 0 - 5, with 6 digits of precision
             const dist = Math.min(Math.max(data, 0), 5).toFixed(6);
             params.param = dist;
         }
 
-        const immediateResponse = await transferOutRPC('dxo_setting_set', params);
-        if (immediateResponse.method === 'dxo_setting_applied') {
-            const response = await transferInRPC();
-            const hasSucceeded = result.id === commandSeq && response.result.type === params.type;
+        // The camera first sends a dxo_setting_applied notification, then the
+        // reply to this request; the transport routes the former to events and
+        // resolves with the latter (matched by id).
+        const response = await transferOutRPC('dxo_setting_set', params);
+        if (!response || response.error) return false;
 
-            return hasSucceeded;
-        }
-
-        return false;
+        const appliedType = response.result?.type;
+        return appliedType === undefined || appliedType === params.type;
     });
 
-    let lastJPEGFrame = new Uint8Array(0);
-    let shouldStopLiveView = false;
+    let lastFrameURL = null;
 
+    function revokeLastFrame() {
+        if (lastFrameURL) {
+            URL.revokeObjectURL(lastFrameURL);
+            lastFrameURL = null;
+        }
+    }
+
+    function stopLiveViewLocal() {
+        transport.setFrameHandler(null);
+        revokeLastFrame();
+    }
+
+    /**
+     * Starts live view. `callback(url)` receives an object URL per frame; the
+     * previous frame's URL is revoked when the next one is delivered and when
+     * live view stops. Resolves once the camera has been switched to view mode.
+     */
     async function startLiveView(callback) {
-        shouldStopLiveView = false;
-        await transferOutRPC('dxo_camera_mode_switch', { "param": 'view' });
-        do {
+        transport.setFrameHandler(frame => {
+            const url = URL.createObjectURL(new Blob([frame], { 'type': 'image/jpeg' }));
+            callback(url);
+            revokeLastFrame();
+            lastFrameURL = url;
+        });
 
-            if (shouldStopLiveView) break;
-
-            let frame = await transferInJPEG() || new Uint8Array(0);
-            // Need 1 more condition to stop empty frames from getting through
-            if (!frame || frame.length === 0) {
-                // console.log(frame);
-                continue;
-            }
-
-            let foundHeaderIndex = lastJPEGFrame.indexOfMulti(JPG_HEADER);
-            let foundTrailerIndex = lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1);
-
-            if (foundHeaderIndex > 0 && foundTrailerIndex > 0) {
-                lastJPEGFrame = lastJPEGFrame.slice(foundHeaderIndex, foundTrailerIndex + 2);
-                let blob = new Blob([lastJPEGFrame], { 'type': 'image/jpeg' });
-                let url = URL.createObjectURL(blob);
-                lastJPEGFrame = new Uint8Array(0);
-                callback(url);
-            } else {
-                let accumulatedJPEGFrame = lastJPEGFrame.slice();
-                const lastLength = lastJPEGFrame.length;
-
-                if (foundHeaderIndex > 0) {
-                    lastJPEGFrame = new Uint8Array(lastLength - foundHeaderIndex + frame.length);
-                    lastJPEGFrame.set(accumulatedJPEGFrame);
-                    lastJPEGFrame.set(frame, lastLength - foundHeaderIndex);
-                } else {
-                    lastJPEGFrame = new Uint8Array(lastLength + frame.length);
-                    lastJPEGFrame.set(accumulatedJPEGFrame);
-                    lastJPEGFrame.set(frame, lastLength);
-                }
-
-                foundHeaderIndex = lastJPEGFrame.indexOfMulti(JPG_HEADER);
-                foundTrailerIndex = lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1);
-
-                if (foundHeaderIndex > 0 && foundTrailerIndex > 0) {
-                    lastJPEGFrame = lastJPEGFrame.slice(foundHeaderIndex, foundTrailerIndex + 2);
-                    let blob = new Blob([lastJPEGFrame], { 'type': 'image/jpeg' });
-                    let url = URL.createObjectURL(blob);
-                    lastJPEGFrame = new Uint8Array(0);
-                    callback(url);
-                }
-            }
-        } while (1);
+        try {
+            await transferOutRPC('dxo_camera_mode_switch', { "param": 'view' });
+        } catch (error) {
+            stopLiveViewLocal();
+            throw error;
+        }
     }
 
     async function stopLiveView() {
-        // TODO: turn this off from the camera side too
-        shouldStopLiveView = true;
+        // TODO: turn this off from the camera side too (no known command yet);
+        // the transport discards any further video data.
+        stopLiveViewLocal();
     }
 
     return {
@@ -298,7 +144,7 @@ async function open(usbBackend = navigator.usb) {
                     rawOn: bindApplySetting({ "type": "raw", "param": "on" }),
 
                     // Temporal Noise Reduction (TNR) to combine the four RAW files into one new SuperRAW Plus file
-                    tnrOff: bindApplySetting({ "type": "tnr", "param": "on" }),
+                    tnrOff: bindApplySetting({ "type": "tnr", "param": "off" }),
                     tnrOn: bindApplySetting({ "type": "tnr", "param": "on" }),
                 },
 
@@ -418,7 +264,7 @@ async function open(usbBackend = navigator.usb) {
                     sport: bindApplySetting({ "type": "shooting_mode", "param": "sport" }),
                     portrait: bindApplySetting({ "type": "shooting_mode", "param": "portrait" }),
                     landscape: bindApplySetting({ "type": "shooting_mode", "param": "landscape" }),
-                    night: bindApplySetting({ "type": "shooting_mode", "param": " night" }),
+                    night: bindApplySetting({ "type": "shooting_mode", "param": "night" }),
 
                     // Priority shooting modes
                     program: bindApplySetting({ "type": "shooting_mode", "param": "program" }),
@@ -484,7 +330,7 @@ async function open(usbBackend = navigator.usb) {
                 },
             },
 
-            getDigitalZoom: transferOutRPC('dxo_digital_zoom_get', { "type": 'current' }),
+            getDigitalZoom: () => transferOutRPC('dxo_digital_zoom_get', { "type": 'current' }),
 
             // Origin is bottom left corner
             focus: (x, y) => transferOutRPC('dxo_tap_to_focus', { "param": `[${x},${y},256,256]` }),
@@ -512,7 +358,8 @@ async function open(usbBackend = navigator.usb) {
 
         // Disconnect
         close: () => {
-            shouldStopLiveView = true;
+            stopLiveViewLocal();
+            transport.close('Device closed');
             return device.close();
         },
     };

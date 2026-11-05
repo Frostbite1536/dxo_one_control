@@ -14,7 +14,7 @@ You are refactoring **dxo1control** code to improve clarity and maintainability 
 - **Do not change behavior**: All functionality must work identically
 - **Do not change APIs**: External interfaces remain the same (INV-API-001)
 - **Do not add features**: This is purely a clarity refactor
-- **Maintain all invariants**: All 11 invariants must still hold
+- **Maintain all invariants**: All 15 invariants must still hold
 
 ---
 

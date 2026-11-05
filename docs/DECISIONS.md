@@ -184,11 +184,131 @@ Adopt Safe Vibe Coding infrastructure including ARCHITECTURE.md, INVARIANTS.md, 
 
 ---
 
+## DEC-005: Native Android App Alongside the Web App
+
+**Date**: 2026-11-04
+**Status**: Accepted
+**Deciders**: Current maintainers
+**Context**: Multi-camera rigs need a portable host. A phone or tablet with a USB hub is easier to carry than a laptop, and Android's USB host API reaches the camera's microUSB port directly.
+
+### Options Considered
+
+1. **Web app only (WebUSB in Android Chrome)**
+   - Pros: One codebase
+   - Cons: No background lifetime, no foreground service, poor handling of several cameras and hubs, tied to browser permission prompts
+
+2. **Native Android app (Kotlin, Compose)**
+   - Pros: Foreground service keeps USB connections alive, direct USB host control, persisted settings
+   - Cons: Second implementation of the protocol to keep in sync with the JS one
+
+### Decision
+
+Add `android-app/` (package `com.dxoone.multicam`) as a native app next to the web code. It reimplements the JS protocol in Kotlin and follows the same transport rules (DEC-006). Image download and a gallery are not implemented.
+
+### Consequences
+
+- Positive: Reliable multi-camera operation on a phone; background lifetime (DEC-007)
+- Negative: Two protocol implementations must stay aligned; Android needs its own build and CI job
+- Neutral: Supersedes the earlier "browser-only" trade-off in DEC-001 for mobile use; the web app remains the demo
+
+---
+
+## DEC-006: Shared Single-Reader Transport With Id-Matched, Serialized RPC
+
+**Date**: 2026-11-04
+**Status**: Accepted
+**Deciders**: Current maintainers (following the Nov 2026 audit, `docs/AUDIT-2026-11.md`)
+**Context**: Live view and JSON-RPC share one bulk-IN endpoint. The original code read "whatever arrives next" after each command, so replies and JPEG packets were swapped, commands could overlap, and a silent camera hung callers.
+
+### Options Considered
+
+1. **Patch each call site** (per-call reads, flags)
+   - Pros: Small diff
+   - Cons: Races remain; JS had two diverging copies (`dxo1usb.js` and `CameraDevice.js`)
+
+2. **One transport per camera** that owns the endpoint
+   - Pros: One place for framing, routing, timeouts; testable without hardware
+   - Cons: Larger refactor on both platforms
+
+### Decision
+
+Introduce `DxoTransport.js` (used by both `dxo1usb.js` and `CameraDevice.js`) and, on Android, `DxoOneStreamDemux` + `DxoOneUsbProtocol` with the same rules: one read pump / reader thread per camera; a demux routes each packet to the in-flight RPC (matched by id; an id-less reply is accepted for the single in-flight request only while the camera has never sent an id; after a timeout the next id-less reply is treated as the late reply and dropped (a truly lost reply costs at most one extra request); stale ids dropped), to an event handler (messages with a `method`), or to the JPEG reassembler; one RPC in flight per camera; per-request timeouts; fatal USB errors fail the in-flight request.
+
+### Consequences
+
+- Positive: No cross-talk between live view and commands; callers cannot hang; protocol logic is unit-testable
+- Negative: Timeout values differ between platforms (commands: JS 5 s, Android 10 s; capture: 40 s on both) and have not been tuned on hardware
+- Neutral: Live-view stop remains host-side only (no camera command known)
+
+---
+
+## DEC-007: Foreground Service Owns Background Lifetime on Android
+
+**Date**: 2026-11-04
+**Status**: Accepted
+**Deciders**: Current maintainers
+**Context**: USB connections must survive the screen turning off or the app being backgrounded, but camera connections should not depend on any Activity or ViewModel lifetime.
+
+### Options Considered
+
+1. **Cameras owned by the ViewModel / Activity**
+   - Pros: Simple
+   - Cons: Duplicate instances on re-launch, connections dropped on teardown
+
+2. **Service owns the cameras**
+   - Pros: Long-lived
+   - Cons: UI and service fight over initialization and cleanup
+
+3. **Process-wide `UsbDeviceManager` owns cameras; a foreground service only keeps the process alive**
+   - Pros: One owner; service lifecycle is trivial
+   - Cons: Cameras are lost on process death (acceptable: USB connections do not survive it anyway)
+
+### Decision
+
+Option 3. `UsbDeviceManager` is process-wide with an idempotent `initialize()` and serialized connects. `CameraManagerService` (foreground, type `connectedDevice`) is started by `DxoOneMultiCamApp` when the first camera connects, stops itself when none remain, and is `START_NOT_STICKY`. `MainActivity` is `singleTop`.
+
+### Consequences
+
+- Positive: No duplicate managers; Android 14 `connectedDevice` prerequisites (USB permission) are met before the service starts
+- Negative: Needs the `POST_NOTIFICATIONS` runtime permission on newer Android to show the notification
+- Neutral: The service exposes capture helpers but is not required for capture
+
+---
+
+## DEC-008: node:test With a Fake Device Instead of a Test Framework
+
+**Date**: 2026-11-04
+**Status**: Accepted
+**Deciders**: Current maintainers
+**Context**: The project has zero dependencies and tests were needed for the transport rework. The risky logic (framing, reassembly, timeouts, serialization) is pure or needs only a scripted USB endpoint.
+
+### Options Considered
+
+1. **Jest / Vitest / Mocha**
+   - Pros: Rich tooling, coverage
+   - Cons: Adds dependencies and config to a dependency-free repo
+
+2. **Node's built-in `node:test` + `test/fakeDxoOne.mjs`**
+   - Pros: No dependencies (Node >= 18); the fake device is injectable through the existing `usbBackend` parameters
+   - Cons: Fewer conveniences, no coverage tooling configured
+
+### Decision
+
+Use `node:test` with a scripted fake DXO One. `npm test` runs `node --check` on every `*.js` / `*.mjs` file, then `node --test test/*.test.mjs`. Android uses plain JUnit in `app/src/test`.
+
+### Consequences
+
+- Positive: CI is real (`js` job) without adding dependencies
+- Negative: No coverage numbers; tests prove the logic, not behavior on real cameras
+- Neutral: Resolves the "Testing Framework" pending item; Jest / Mocha / Vitest were not adopted
+
+---
+
 ## Future Decisions (To Be Made)
 
 ### Pending
 
-- **Testing Framework**: Jest vs. Mocha vs. Vitest vs. native Node.js test runner
+- ~~**Testing Framework**~~ Decided: native `node:test` (DEC-008)
 - **Type System**: TypeScript adoption vs. JSDoc comments vs. no types
 - **Linting**: ESLint configuration and rules
 - **Build System**: Whether to introduce build step or keep simple scripts
@@ -217,6 +337,6 @@ None yet.
 
 ---
 
-**Last Updated**: 2026-01-04
-**Document Version**: 1.0
-**Total Decisions**: 4 (3 inherited, 1 new)
+**Last Updated**: 2026-11-04
+**Document Version**: 1.1
+**Total Decisions**: 8 (3 inherited, 5 new)

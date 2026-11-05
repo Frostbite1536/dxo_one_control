@@ -6,19 +6,7 @@
     for use in multi-camera scenarios.
 */
 
-import { getU8AFromHexString, compareU8A, mergeU8A, getStringFromU8A } from './u8a.js';
-
-const METADATA_INIT_SIGNATURE = getU8AFromHexString('A3, BA, D1, 10, AB, CD, AB, CD, 00, 00, 00, 00, 02, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00');
-const METADATA_INIT_RESPONSE_SIGNATURE = getU8AFromHexString('A3, BA, D1, 10, DC, BA, DC, BA, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00');
-
-const RPC_HEADER = getU8AFromHexString('A3, BA, D1, 10, 17, 08, 00, 0C');
-const RPC_HEADER_TRAILER = getU8AFromHexString('00, 00, 03, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00, 00');
-
-const JPG_METADATA_HEADER = getU8AFromHexString('A3, BA, D1, 10');
-const JPG_HEADER = getU8AFromHexString('FF, D8, FF');
-const JPG_TRAILER = getU8AFromHexString('FF, D9');
-
-const MAX_PACKETSIZE = 512;
+import { DxoTransport } from './DxoTransport.js';
 
 /**
  * CameraDevice - Manages a single DXO One camera connection
@@ -54,13 +42,12 @@ export class CameraDevice {
         this.inEndpoint = null;
         this.outEndpoint = null;
 
-        // RPC sequence tracking
-        this.seq = 0;
+        // Shared USB transport (read pump, serialized RPC, timeouts)
+        this.transport = null;
 
         // Live view state
-        this.lastJPEGFrame = new Uint8Array(0);
-        this.shouldStopLiveView = false;
         this.isLiveViewActive = false;
+        this._frameHandler = null; // handler installed by the latest startLiveView()
 
         // Camera metadata cache
         this.settings = null;
@@ -101,18 +88,11 @@ export class CameraDevice {
             this.inEndpoint = this.device.configuration.interfaces[0].alternate.endpoints[1].endpointNumber;
             this.outEndpoint = this.device.configuration.interfaces[0].alternate.endpoints[0].endpointNumber;
 
-            await this.device.transferOut(this.outEndpoint, METADATA_INIT_RESPONSE_SIGNATURE);
-
-            // Drain any pre-existing data from the device's outbound buffer
-            let initDrainRXBuffer = [];
-            do {
-                initDrainRXBuffer = await this._getRX(MAX_PACKETSIZE);
-
-                if (compareU8A(initDrainRXBuffer, METADATA_INIT_SIGNATURE)) {
-                    await this.device.transferOut(this.outEndpoint, METADATA_INIT_RESPONSE_SIGNATURE);
-                    break;
-                }
-            } while (initDrainRXBuffer.length > 0);
+            this.transport = new DxoTransport(this.device, this.inEndpoint, this.outEndpoint, {
+                name: this.displayName,
+                onFatal: error => this._onTransportFailure(error),
+            });
+            await this.transport.open();
 
             // INV-DATA-003: Update connection state accurately
             this.isConnected = true;
@@ -126,8 +106,27 @@ export class CameraDevice {
             // INV-CONS-003: Provide clear error recovery
             this.lastError = error;
             this.isConnected = false;
+            this.transport?.close('Initialization failed');
+            this.transport = null;
+            // STATE_MACHINES: a failed INITIALIZING releases the device
+            try {
+                if (this.device.opened) await this.device.close();
+            } catch (closeError) {
+                console.warn(`Error closing camera ${this.displayName} after failed init:`, closeError);
+            }
             throw new Error(`Failed to initialize camera ${this.displayName}: ${error.message}`);
         }
+    }
+
+    /**
+     * Called by the transport when a USB transfer fails (e.g. unplugged).
+     *
+     * @private
+     */
+    _onTransportFailure(error) {
+        this.lastError = error;
+        this.isConnected = false;
+        this.isLiveViewActive = false;
     }
 
     /**
@@ -150,155 +149,22 @@ export class CameraDevice {
     }
 
     /**
-     * Internal method to receive data from the camera
+     * Sends an RPC command to the camera and returns the matching reply.
      *
-     * @param {number} byteLength - Maximum bytes to receive
-     * @returns {Promise<Uint8Array>} Received data
-     * @private
-     */
-    async _getRX(byteLength = 32) {
-        // INV-DATA-003: Check connection before operation
-        if (!this.isConnected && this.isInitialized) {
-            throw new Error('Camera disconnected');
-        }
-        return this.device.transferIn(this.inEndpoint, byteLength)
-            .then(res => new Uint8Array(res.data.buffer));
-    }
-
-    /**
-     * Transfers JPEG data from the camera (for live view)
-     *
-     * @returns {Promise<Uint8Array>} JPEG image data
-     */
-    async transferInJPEG() {
-        let metadata = await this._getRX(MAX_PACKETSIZE);
-
-        if (compareU8A(metadata, METADATA_INIT_SIGNATURE)) {
-            await this.device.transferOut(this.outEndpoint, METADATA_INIT_RESPONSE_SIGNATURE);
-            metadata = await this._getRX(MAX_PACKETSIZE);
-        }
-
-        let jpgResponse = new Uint8Array(metadata.length);
-
-        let offset = 0;
-        if (jpgResponse.indexOfMulti(JPG_METADATA_HEADER) >= 0) {
-            offset = metadata.length - 32;
-            jpgResponse.set(metadata.slice(32));
-        } else {
-            offset = 0;
-            jpgResponse.set(metadata);
-        }
-
-        let payload;
-        do {
-            payload = await this._getRX(MAX_PACKETSIZE);
-
-            const diffLength = jpgResponse.length - (offset + payload.length);
-            if (diffLength < 0) {
-                let newJpgResponse = new Uint8Array(offset + payload.length);
-                newJpgResponse.set(jpgResponse);
-                jpgResponse = newJpgResponse;
-            }
-
-            jpgResponse.set(payload, offset);
-            offset += payload.length;
-        } while (payload.indexOfMulti(JPG_TRAILER) < 0);
-
-        return jpgResponse;
-    }
-
-    /**
-     * Receives an RPC response from the camera
-     *
-     * @returns {Promise<Object|null>} Parsed JSON-RPC response
-     */
-    async transferInRPC() {
-        let metadata = await this._getRX(MAX_PACKETSIZE);
-
-        if (compareU8A(metadata, METADATA_INIT_SIGNATURE)) {
-            await this.device.transferOut(this.outEndpoint, METADATA_INIT_RESPONSE_SIGNATURE);
-            metadata = await this._getRX(MAX_PACKETSIZE);
-        }
-
-        const rpcResponseSize = metadata[8] + (metadata[9] << 8);
-
-        // INV-API-002: Consistent return type (null for no response)
-        if (rpcResponseSize === 0) return null;
-
-        let rpcResponse = new Uint8Array(rpcResponseSize);
-        rpcResponse.set(metadata.slice(32));
-        let offset = metadata.length - 32;
-
-        let payload;
-        do {
-            if (offset === rpcResponseSize) break;
-
-            payload = await this._getRX(MAX_PACKETSIZE);
-            if (compareU8A(payload, METADATA_INIT_SIGNATURE)) {
-                await this.device.transferOut(this.outEndpoint, METADATA_INIT_RESPONSE_SIGNATURE);
-                break;
-            }
-
-            try {
-                rpcResponse.set(payload, offset);
-            } catch (e) {
-                return null;
-            }
-
-            offset += payload.length;
-        } while (offset < rpcResponseSize);
-
-        const decodedString = getStringFromU8A(rpcResponse).replace(/\x00/g, '').trim();
-
-        try {
-            const res = JSON.parse(decodedString);
-            if (res.method === 'dxo_usb_flush_forced') {
-                return await this.transferInRPC();
-            } else {
-                return res;
-            }
-        } catch (e) {
-            console.log(`[${this.displayName}] Failed to parse:`, decodedString);
-            return null;
-        }
-    }
-
-    /**
-     * Sends an RPC command to the camera and returns the response
+     * JSON-RPC error replies resolve normally (check `.error`). Rejects if the
+     * camera is not connected, the transfer fails, or no reply arrives in time.
      *
      * @param {string} method - RPC method name
      * @param {Object} [params] - RPC parameters
+     * @param {Object} [options] - { timeoutMs }
      * @returns {Promise<Object>} RPC response
      */
-    async transferOutRPC(method, params) {
+    async transferOutRPC(method, params, options) {
         // INV-DATA-003: Check connection state
-        if (!this.isConnected) {
+        if (!this.isConnected || !this.transport) {
             throw new Error(`Camera ${this.displayName} not connected`);
         }
-
-        await this.device.transferOut(this.outEndpoint, METADATA_INIT_RESPONSE_SIGNATURE);
-
-        // INV-DATA-001: Use Uint8Array for all messages
-        const payload = new TextEncoder().encode(JSON.stringify({
-            "jsonrpc": "2.0",
-            "id": this.seq,
-            method,
-            ...(params ? { params } : {}),
-        }) + '\x00');
-
-        this.seq++;
-
-        const msgDetails = mergeU8A([
-            payload.length % (1 << 8),
-            Math.floor(payload.length / (1 << 8))
-        ], RPC_HEADER_TRAILER);
-
-        const msgHeader = mergeU8A(RPC_HEADER, msgDetails);
-        const msgWhole = mergeU8A(msgHeader, payload);
-
-        await this.device.transferOut(this.outEndpoint, msgWhole);
-
-        return await this.transferInRPC();
+        return this.transport.request(method, params, options);
     }
 
     /**
@@ -307,7 +173,13 @@ export class CameraDevice {
      * @returns {Promise<Object>} Photo capture result
      */
     async takePhoto() {
-        return await this.transferOutRPC('dxo_photo_take');
+        const response = await this.transferOutRPC('dxo_photo_take');
+        // INV-MULTI-003: a camera that refused the capture must not count as success
+        if (response?.error) {
+            const detail = response.error.message || JSON.stringify(response.error);
+            throw new Error(`Camera ${this.displayName} rejected capture: ${detail}`);
+        }
+        return response;
     }
 
     /**
@@ -333,75 +205,63 @@ export class CameraDevice {
     /**
      * Starts live view with a callback for each frame
      *
+     * Resolves once the camera has been switched to view mode; frames are then
+     * delivered by the transport's read pump. Calling it again while active
+     * only replaces the callback.
+     *
      * @param {Function} callback - Called with (url, revokeCallback) for each frame.
      *                              Call revokeCallback() after using the URL to free memory.
+     * @returns {Promise<void>}
      */
     async startLiveView(callback) {
-        this.shouldStopLiveView = false;
-        this.isLiveViewActive = true;
+        if (!this.isConnected || !this.transport) {
+            throw new Error(`Camera ${this.displayName} not connected`);
+        }
 
-        await this.transferOutRPC('dxo_camera_mode_switch', { "param": 'view' });
+        const handler = frame => {
+            const url = URL.createObjectURL(new Blob([frame], { 'type': 'image/jpeg' }));
+            callback(url, () => URL.revokeObjectURL(url));
+        };
+        this._frameHandler = handler;
+        this.transport.setFrameHandler(handler);
 
-        do {
-            if (this.shouldStopLiveView) break;
+        if (this.isLiveViewActive) return;
 
-            let frame = await this.transferInJPEG() || new Uint8Array(0);
-            if (!frame || frame.length === 0) continue;
-
-            let foundHeaderIndex = this.lastJPEGFrame.indexOfMulti(JPG_HEADER);
-            // Only search for trailer if header was found (Bug fix: invalid offset)
-            let foundTrailerIndex = foundHeaderIndex >= 0
-                ? this.lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1)
-                : -1;
-
-            // Bug fix: >= 0 instead of > 0 (header at index 0 is valid)
-            if (foundHeaderIndex >= 0 && foundTrailerIndex >= 0) {
-                this.lastJPEGFrame = this.lastJPEGFrame.slice(foundHeaderIndex, foundTrailerIndex + 2);
-                let blob = new Blob([this.lastJPEGFrame], { 'type': 'image/jpeg' });
-                let url = URL.createObjectURL(blob);
-                this.lastJPEGFrame = new Uint8Array(0);
-                // Bug fix: Pass URL revocation callback to prevent memory leak
-                callback(url, () => URL.revokeObjectURL(url));
-            } else {
-                let accumulatedJPEGFrame = this.lastJPEGFrame.slice();
-                const lastLength = this.lastJPEGFrame.length;
-
-                if (foundHeaderIndex > 0) {
-                    this.lastJPEGFrame = new Uint8Array(lastLength - foundHeaderIndex + frame.length);
-                    this.lastJPEGFrame.set(accumulatedJPEGFrame);
-                    this.lastJPEGFrame.set(frame, lastLength - foundHeaderIndex);
-                } else {
-                    this.lastJPEGFrame = new Uint8Array(lastLength + frame.length);
-                    this.lastJPEGFrame.set(accumulatedJPEGFrame);
-                    this.lastJPEGFrame.set(frame, lastLength);
-                }
-
-                foundHeaderIndex = this.lastJPEGFrame.indexOfMulti(JPG_HEADER);
-                // Only search for trailer if header was found (Bug fix: invalid offset)
-                foundTrailerIndex = foundHeaderIndex >= 0
-                    ? this.lastJPEGFrame.indexOfMulti(JPG_TRAILER, foundHeaderIndex + 1)
-                    : -1;
-
-                // Bug fix: >= 0 instead of > 0 (header at index 0 is valid)
-                if (foundHeaderIndex >= 0 && foundTrailerIndex >= 0) {
-                    this.lastJPEGFrame = this.lastJPEGFrame.slice(foundHeaderIndex, foundTrailerIndex + 2);
-                    let blob = new Blob([this.lastJPEGFrame], { 'type': 'image/jpeg' });
-                    let url = URL.createObjectURL(blob);
-                    this.lastJPEGFrame = new Uint8Array(0);
-                    // Bug fix: Pass URL revocation callback to prevent memory leak
-                    callback(url, () => URL.revokeObjectURL(url));
-                }
+        try {
+            await this.transferOutRPC('dxo_camera_mode_switch', { "param": 'view' });
+            // stopLiveView() (or another start) may have run while we waited.
+            if (this._frameHandler === handler) this.isLiveViewActive = true;
+        } catch (error) {
+            if (this._frameHandler === handler) {
+                this.transport?.setFrameHandler(null);
+                this._frameHandler = null;
+                this.isLiveViewActive = false;
             }
-        } while (1);
-
-        this.isLiveViewActive = false;
+            this.lastError = error;
+            throw error;
+        }
     }
 
     /**
      * Stops live view
+     *
+     * TODO: turn this off from the camera side too (no known command yet);
+     * until then the transport discards any further video data.
      */
     stopLiveView() {
-        this.shouldStopLiveView = true;
+        this._frameHandler = null;
+        this.transport?.setFrameHandler(null);
+        this.isLiveViewActive = false;
+    }
+
+    /**
+     * Marks the camera as gone after a USB disconnect event, failing any
+     * in-flight request instead of letting it hang.
+     */
+    markDisconnected() {
+        this.stopLiveView();
+        this.transport?.close('Camera disconnected');
+        this.isConnected = false;
     }
 
     /**
@@ -410,8 +270,8 @@ export class CameraDevice {
      * @returns {Promise<void>}
      */
     async close() {
-        this.shouldStopLiveView = true;
-        this.isLiveViewActive = false;
+        this.stopLiveView();
+        this.transport?.close('Camera closed');
 
         try {
             await this.device.close();

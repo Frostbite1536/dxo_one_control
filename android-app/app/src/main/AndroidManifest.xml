@@ -34,6 +34,7 @@
         <activity
             android:name=".ui.MainActivity"
             android:exported="true"
+            android:launchMode="singleTop"
             android:label="@string/app_name"
             android:theme="@style/Theme.DxoOneMultiCam">
 
@@ -52,12 +53,17 @@
                 android:resource="@xml/device_filter" />
         </activity>
 
-        <!-- Camera Manager Foreground Service -->
+        <!-- Camera Manager Foreground Service.
+             For USB devices, the connectedDevice type's second prerequisite is a runtime
+             UsbManager permission for an attached device (not one of the Bluetooth/NFC/
+             network manifest permissions lint checks for), so the lint rule is suppressed.
+             The service is only started after a camera has connected. -->
         <service
             android:name=".service.CameraManagerService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="connectedDevice" />
+            android:foregroundServiceType="connectedDevice"
+            tools:ignore="ForegroundServicePermission" />
 
     </application>
 

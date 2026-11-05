@@ -5,8 +5,7 @@
   "type": "module",
   "main": "dxo1usb.js",
   "scripts": {
-    "test": "node --check dxo1usb.js && node --check u8a.js && node --check resizeDNG.mjs",
-    "lint": "echo 'Linting not yet configured'"
+    "test": "for f in *.js *.mjs; do node --check \"$f\" || exit 1; done && node --test test/*.test.mjs"
   },
   "keywords": [
     "dxo",
@@ -23,7 +22,7 @@
     "url": "https://github.com/jsyang/dxo1control"
   },
   "engines": {
-    "node": ">=14.0.0"
+    "node": ">=18"
   },
   "devDependencies": {},
   "dependencies": {}

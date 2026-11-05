@@ -16,7 +16,7 @@
 
 ## Introduction
 
-DXO One Control is a web-based application for controlling DXO One cameras via USB. It provides programmatic control over your camera, enabling live view, photo capture, and advanced settings management directly from your web browser.
+DXO One Control controls DXO One cameras over USB. It has two web pages (`usb.html` for one camera, `multi-camera.html` for up to four) that run in a Chromium-based browser using WebUSB, plus a JavaScript API for scripting settings. A separate native Android app (see [android-app/README.md](../android-app/README.md)) does multi-camera capture from a phone or tablet.
 
 ### Features
 
@@ -27,9 +27,9 @@ DXO One Control is a web-based application for controlling DXO One cameras via U
   - Multi-angle product photography
   - Scientific/research capture
 - **Live View**: Real-time preview from your camera
-- **Full Camera Control**: Adjust ISO, aperture, exposure, focus, and more
-- **Synchronized Capture**: Take photos across multiple cameras with minimal delay
-- **DNG Post-Processing**: Resize and convert RAW files to JPEG
+- **Camera Settings API**: Adjust ISO, aperture, exposure, focus, and more from JavaScript (the web pages themselves do not expose these controls)
+- **Multi-Camera Capture**: Trigger photos on all connected cameras in parallel or one after another
+- **DNG Post-Processing**: Resize and convert RAW files to JPEG (macOS only)
 
 ---
 
@@ -38,17 +38,18 @@ DXO One Control is a web-based application for controlling DXO One cameras via U
 ### Hardware
 
 - **DXO One Camera**: One or more DXO One cameras
-- **microUSB Cable**: REQUIRED - only microUSB connection is supported
-  - ⚠️ **Lightning connector is NOT supported**
+- **microUSB Cable**: REQUIRED - only microUSB connection has been tested
+  - ⚠️ The Lightning variant is **not tested and not supported**: the device filter only matches vendor ID `0x2b8f`
 - **USB Ports**: One available USB port per camera for multi-camera setup
 
 ### Software
 
 - **Web Browser**: Chrome, Edge, or Opera (WebUSB support required)
-  - Chrome is recommended for best compatibility
   - Firefox and Safari do NOT support WebUSB
+  - The page must be served over HTTPS or from `localhost` (not `file://`)
 - **Operating System**: Windows, macOS, or Linux
-- **Node.js**: Version 14.0.0 or higher (for post-processing tools only)
+- **Node.js**: Version 18 or higher (for `npm test` and `resizeDNG.mjs`)
+- **macOS**: required for `resizeDNG.mjs` only (it uses the `sips` tool)
 
 ### Permissions
 
@@ -67,9 +68,9 @@ DXO One Control is a web-based application for controlling DXO One cameras via U
 
 ### Step 2: Launch the Web Interface
 
-#### Option A: Using a Web Server
+#### Option A: Using a Local Web Server
 
-If you have a local web server running:
+WebUSB only works on HTTPS or `localhost`, so serve the folder:
 
 ```bash
 # Navigate to the project directory
@@ -86,9 +87,9 @@ Then open your browser to:
 - Single camera: `http://localhost:8000/usb.html`
 - Multi-camera: `http://localhost:8000/multi-camera.html`
 
-#### Option B: Using the Live Demo
+#### Option B: Upstream Demo
 
-Visit the online demo at: [https://dxo1demo.jsyang.ca/usb.html](https://dxo1demo.jsyang.ca/usb.html)
+The upstream project hosts a demo at [https://dxo1demo.jsyang.ca/usb.html](https://dxo1demo.jsyang.ca/usb.html). It is run by the upstream author and may not reflect this fork's code.
 
 ---
 
@@ -123,13 +124,15 @@ Once connected:
 3. Use this to frame your shots and check focus
 4. Click **"Stop live view"** when finished
 
-**Note**: Live view uses JPEG streaming and updates continuously. Performance depends on your USB connection and computer speed.
+**Note**: Live view uses JPEG streaming and updates continuously. Performance depends on your USB connection and computer speed. Stopping live view stops the page from displaying frames, but the camera may keep streaming: no command to take it out of view mode is known.
 
 ### Disconnecting
 
 1. Stop live view if active
 2. Click **"Disconnect"**
 3. Your camera is now safe to unplug
+
+If you unplug a camera without disconnecting, any command in progress on it fails with an error.
 
 ---
 
@@ -177,7 +180,7 @@ Each camera appears in the left panel with:
 
 **Parallel Mode (Default)**
 - All cameras trigger simultaneously
-- Best effort synchronization (~50ms variance)
+- Best-effort synchronization (the commands are sent back-to-back; the actual spread has not been measured)
 - Fastest option for time-sensitive captures
 - Recommended for most use cases
 
@@ -224,87 +227,50 @@ When a camera is selected, you can:
 
 ## Camera Settings
 
-The DXO One Control API provides extensive programmatic control. While the basic web interface shows status, you can access advanced settings through the JavaScript API.
+The web pages only offer connect, live view, and photo capture. Camera settings are available through the JavaScript API (`setSettings` in `dxo1usb.js`). Each entry below is a function that sends one setting command to the camera.
 
 ### Available Settings
 
-#### Image Format
+All of these live under `camera.command.setSettings`:
 
-- **RAW**: Enable/disable RAW (DNG) file capture
-- **TNR (Temporal Noise Reduction)**: Combine 4 RAW files into SuperRAW Plus
+- **`imageFormat`**: `rawOn`, `rawOff`, `tnrOn`, `tnrOff` (TNR combines four RAW files into one SuperRAW Plus file)
+- **`stillFocusingMode`**: `AF`, `MF`
+- **`afMode`**: `AF_S` (single shot), `AF_C` (continuous), `AF_OD` (on demand)
+- **`mfInvDistance(value)`**: manual-focus inverse distance, clamped to 0–5 and sent with 6 decimals; without an argument it sends `0.000000`
+- **`shootingMode`**: `sport`, `portrait`, `landscape`, `night`, `program`, `aperture`, `shutter`, `manual`
+- **`iso`**: `auto`, `iso100` ... `iso51200`
+- **`aperture`**: `f1_8` through `f11` (1.8, 2, 2.2, 2.5, 2.8, 3.2, 3.5, 4, 4.5, 5, 5.6, 6.3, 7.1, 8, 9, 10, 11)
+- **`exposureTime`**: `t1_20000` ... `t1_1`, `t2_1`, `t4_1`, `t8_1`, `t15_1`, `t30_1`
+- **`evBias`**: `m3_0` ... `zero` ... `p3_0` (-3.0 to +3.0 in roughly 1/3 steps)
+- **`maxIso`**: `auto` (no limit), `iso100` ... `iso51200`
+- **`maxShutter`**: `auto`, `t15_1`, `t2_1`, `t1_3`, `t1_6`, `t1_13`, `t1_25`, `t1_50`, `t1_100`, `t1_200`, `t1_400`
+- **`shutterMode`**: `single`, `timelapse`, and self-timer `timer0s`, `timer2s`, `timer10s`
+- **`imageQuality`**: `fine` (100), `normal` (95), `basic` (70)
+- **`autoWhiteBalance`**: `off`, `slight`, `medium`, `strong`
+- **`metadata`**: `copyright(text)`, `artist(text)`; without an argument they send the placeholder strings `COPYRIGHT` / `ARTIST`
+- **`videoQuality`**: `standard` (16 Mbps), `better` (22 Mbps), `highest` (30 Mbps)
 
-#### Focus Settings
+Other commands under `camera.command`:
 
-- **Focus Mode**:
-  - `AF` (Auto Focus)
-  - `MF` (Manual Focus)
-- **AF Mode**:
-  - `AF-S` (Single Shot)
-  - `AF-C` (Continuous)
-  - `AF-OD` (On Demand)
-- **Manual Focus Distance**: 0-5 meters (inverse distance)
-- **Tap to Focus**: Click coordinates to focus
+- `getAllSettings()`, `getStatus()`, `takePhoto()`, `sleep()`
+- `focus(x, y)` (tap to focus; origin is the bottom-left corner), `flushFocus()`
+- `getDigitalZoom()`
+- `liveView.start(callback)`, `liveView.stop()`
+- `setGPSData()` and `fs.*` are experimental: GPS sends a placeholder string and file retrieval is marked as untested in the code.
 
-#### Exposure Settings
+### Timeouts and Errors
 
-- **Shooting Mode**:
-  - Scene modes: Sport, Portrait, Landscape, Night
-  - Priority modes: Program (P), Aperture (A), Shutter (S), Manual (M)
-
-- **ISO**: Auto, 100, 200, 400, 800, 1600, 3200, 6400, 12800, 25600, 51200
-
-- **Aperture**: f/1.8 to f/11 (in 1/3 stops)
-
-- **Exposure Time**: 1/20000s to 30s
-
-- **EV Compensation**: -3.0 to +3.0 (in 1/3 stops)
-
-- **Max ISO Limit**: Set upper ISO boundary for auto modes
-
-- **Max Shutter Speed**: Set longest exposure for auto modes
-
-#### Drive Mode
-
-- **Shutter Mode**:
-  - Single shot
-  - Timelapse
-
-- **Self Timer**: 0s, 2s, 10s delay
-
-#### Image Quality
-
-- **JPEG Quality**:
-  - Fine (100%)
-  - Normal (95%)
-  - Basic (70%)
-
-#### White Balance
-
-- **Auto White Balance Intensity**:
-  - Off
-  - Slight
-  - Medium
-  - Strong
-
-#### Metadata
-
-- **Copyright**: Embed copyright text in EXIF
-- **Artist**: Embed artist name in EXIF
-- **GPS Data**: Set location information
-
-#### Video
-
-- **Video Quality**:
-  - Standard (16 Mbps)
-  - Better (22 Mbps)
-  - Highest (30 Mbps)
+- Commands time out after 5 seconds by default, and after 40 seconds for taking a photo (long exposures go up to 30 s).
+- Each camera handles one command at a time; further commands wait their turn.
+- Unplugging a camera fails its pending command.
 
 ### Programmatic Access
 
-To access settings programmatically, use the JavaScript API:
+Single camera (from a module script, with the page served over HTTPS or localhost; `open()` must be called from a user gesture such as a click):
 
 ```javascript
-// Single camera mode
+import DXOONE from './dxo1usb.js';
+
 const camera = await DXOONE.open();
 
 // Get all current settings
@@ -321,28 +287,36 @@ await camera.command.setSettings.aperture.f2_8();
 
 // Enable RAW
 await camera.command.setSettings.imageFormat.rawOn();
+
+// Disconnect
+await camera.close();
 ```
 
-For multi-camera mode:
+Multi-camera:
 
 ```javascript
-// Create manager
+import { CameraManager } from './CameraManager.js';
+
 const manager = new CameraManager();
 
-// Connect camera
+// Connect cameras (each call shows the browser's device picker)
 const camera = await manager.connectCamera();
 
-// Access camera directly
+// Access a camera directly
 await camera.transferOutRPC('dxo_setting_set', {
     type: 'iso',
     param: 'iso800'
 });
 
-// Send command to all cameras
+// Send a command to all cameras
 await manager.sendCommandToAll('dxo_setting_set', {
     type: 'iso',
     param: 'iso800'
 });
+
+// Capture on all cameras
+manager.setSyncMode('parallel'); // or 'sequential'
+const results = await manager.captureAll();
 ```
 
 ---
@@ -351,35 +325,29 @@ await manager.sendCommandToAll('dxo_setting_set', {
 
 ### resizeDNG.mjs
 
-The `resizeDNG.mjs` script resizes and converts DNG (RAW) files to JPEG without modifying the color space.
+The `resizeDNG.mjs` script converts every DNG (RAW) file in a directory to a quarter-size JPEG.
 
 #### Requirements
 
-- Node.js 14.0.0 or higher
-- DNG files from your DXO One camera
+- **macOS** (it shells out to the built-in `sips` tool, so it does not work on Windows or Linux)
+- Node.js 18 or higher
+- A directory containing `.dng` files from your DXO One camera
 
 #### Usage
 
 ```bash
-# Basic usage
-node resizeDNG.mjs input.dng output.jpg
-
-# Process multiple files
-node resizeDNG.mjs input1.dng output1.jpg
-node resizeDNG.mjs input2.dng output2.jpg
-
-# Use in a script
-for file in *.dng; do
-    node resizeDNG.mjs "$file" "${file%.dng}.jpg"
-done
+node resizeDNG.mjs <directory>
 ```
 
-#### Features
+- Every file in `<directory>` with a `.dng` extension (case-insensitive) is converted.
+- Output goes to `<directory>/resized/<name>.jpg`, at 25% of 5540x3688 pixels (1385x922).
+- If one file fails, the error is printed and the rest are still processed; the exit code is 1 at the end.
+- Run with no argument to print usage.
 
-- Preserves original color space
-- Maintains image quality
-- Automatic resizing for efficient storage
-- No external dependencies required
+#### Notes
+
+- The script does no explicit colorspace or profile handling; it relies on `sips` defaults. Whether the original colorspace is preserved has not been verified.
+- No npm dependencies are required.
 
 ---
 
@@ -404,7 +372,7 @@ done
 **Solutions**:
 1. Switch to Chrome, Edge, or Opera browser
 2. Ensure browser is up to date
-3. Check you're accessing via HTTP/HTTPS (not file://)
+3. Check the page is served over HTTPS or from `localhost` (not `file://` or plain HTTP on another host)
 4. Verify WebUSB isn't disabled in browser flags
 
 ### Connection Drops Unexpectedly
@@ -434,11 +402,10 @@ done
 **Problem**: Cameras don't capture at the same time
 
 **Solutions**:
-1. Use Parallel sync mode for best synchronization
-2. Expect ~50ms variance (this is normal for software sync)
-3. Connect cameras to different USB controllers if possible
-4. Close other applications to reduce CPU load
-5. For critical sync, consider Sequential mode
+1. Use Parallel sync mode for the closest timing (it is software-triggered, so exact simultaneity is not guaranteed)
+2. Connect cameras to different USB controllers if possible
+3. Close other applications to reduce CPU load
+4. If parallel mode causes errors, try Sequential mode
 
 ### Photo Not Captured
 
@@ -450,6 +417,7 @@ done
 3. Wait for camera to complete previous operation
 4. Check camera battery level
 5. Disconnect and reconnect
+6. A command that gets no reply fails with a timeout error (5 s, or 40 s for photos)
 
 ### Browser Permissions Error
 
@@ -474,7 +442,7 @@ done
 
 ### Hardware Limitations
 
-- **microUSB only**: Lightning connector is not supported
+- **microUSB only**: the Lightning variant is not tested or supported
 - **USB bandwidth**: Multiple cameras on same USB controller may affect performance
 - **Camera limit**: Maximum 4 cameras supported simultaneously
 - **Cable quality**: Poor cables can cause connection issues
@@ -482,15 +450,16 @@ done
 ### Software Limitations
 
 - **Browser dependency**: Requires WebUSB (Chrome/Edge/Opera only)
-- **No mobile support**: Mobile browsers don't support WebUSB
-- **Sync variance**: Multi-camera capture has ~50ms variance (software sync)
+- **No mobile browser support**: Mobile browsers don't support WebUSB; on Android use the native app in [android-app/README.md](../android-app/README.md)
+- **Software sync only**: Multi-camera capture is triggered by software; timing spread has not been measured
+- **Post-processing is macOS only**: `resizeDNG.mjs` needs `sips`
 - **Platform specific**: Some features may behave differently on Windows/Mac/Linux
 
 ### Camera Limitations
 
 - **Battery drain**: USB connection drains camera battery
 - **Firmware dependent**: Some features depend on camera firmware version
-- **Storage access**: Direct file retrieval not fully tested
+- **Storage access**: Direct file retrieval (`fs.*`) is untested
 - **Live view quality**: JPEG stream quality may vary
 
 ### API Limitations
@@ -506,8 +475,9 @@ done
 
 ### Project Links
 
-- **Repository**: [https://github.com/jsyang/dxo1control](https://github.com/jsyang/dxo1control)
-- **Live Demo**: [https://dxo1demo.jsyang.ca/usb.html](https://dxo1demo.jsyang.ca/usb.html)
+- **Upstream repository**: [https://github.com/jsyang/dxo1control](https://github.com/jsyang/dxo1control)
+- **Upstream demo** (may not reflect this fork): [https://dxo1demo.jsyang.ca/usb.html](https://dxo1demo.jsyang.ca/usb.html)
+- **Android app**: [android-app/README.md](../android-app/README.md)
 - **License**: GPL 3.0
 
 ### Credits
@@ -519,6 +489,7 @@ This project builds upon:
 ### Related Documentation
 
 - [ARCHITECTURE.md](./ARCHITECTURE.md) - System architecture and design
+- [STATE_MACHINES.md](./STATE_MACHINES.md) - State machines
 - [INVARIANTS.md](./INVARIANTS.md) - Code invariants and constraints
 - [ROADMAP.md](./ROADMAP.md) - Future development plans
 - [DECISIONS.md](./DECISIONS.md) - Design decisions and rationale
@@ -549,11 +520,16 @@ This project builds upon:
 ### Post-Processing
 
 ```bash
-node resizeDNG.mjs input.dng output.jpg
+node resizeDNG.mjs <directory>   # macOS only
+```
+
+### Tests
+
+```bash
+npm test   # Node.js 18+
 ```
 
 ---
 
-**Version**: 1.0.0
-**Last Updated**: 2025
+**Version**: 1.0.0 (package.json)
 **Compatibility**: DXO One cameras via microUSB connection

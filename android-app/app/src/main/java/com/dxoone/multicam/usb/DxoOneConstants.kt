@@ -69,9 +69,38 @@ object DxoOneConstants {
     )
 
     // Timeouts (milliseconds)
+    /** Timeout for a single bulk-OUT write. */
     const val USB_TIMEOUT_MS = 5000
+    /** Time to wait for the reply to an ordinary RPC command. */
     const val COMMAND_TIMEOUT_MS = 10000
-    const val CAPTURE_TIMEOUT_MS = 30000
+    /** Time to wait for the reply to dxo_photo_take (covers long exposures). */
+    const val CAPTURE_TIMEOUT_MS = 40000
+    /** Poll timeout of each bulk-IN read in the reader thread (keeps stop() responsive). */
+    const val READ_POLL_TIMEOUT_MS = 250
+    /** How long initialization waits for the camera's init signature before proceeding. */
+    const val INIT_SIGNATURE_WAIT_MS = 2000L
+    /** Bounded wait for the reader thread to exit in stop(). */
+    const val READER_JOIN_TIMEOUT_MS = 1000L
+
+    // Dead-device detection: bulkTransfer returns -1 for both timeout and error, so a
+    // run of -1 results that each return almost immediately means the device is gone.
+    const val DEAD_DEVICE_FAST_FAIL_MS = 5L
+    const val DEAD_DEVICE_FAST_FAIL_COUNT = 50
+
+    /**
+     * After this many consecutive immediate bulk-IN failures the reader assumes the endpoint
+     * may be halted (STALL) and sends CLEAR_FEATURE(ENDPOINT_HALT) before giving up.
+     */
+    const val STALL_CLEAR_AFTER_FAILURES = 5
+
+    /** Halt clears allowed without an intervening successful read before the device counts as dead. */
+    const val MAX_HALT_CLEARS = 3
+
+    /** Bound for a queued ACK write to finish when the transport stops. */
+    const val ACK_DRAIN_TIMEOUT_MS = 500L
+
+    /** Bound for waiting on a previous connection to the same device to be released. */
+    const val RELEASE_WAIT_TIMEOUT_MS = 2000L
 
     // Multi-camera limits (INV-MULTI-002)
     const val MAX_CAMERAS = 4

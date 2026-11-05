@@ -20,7 +20,7 @@ You are performing an invariant check on **dxo1control** code changes. Your job 
 
 ### 1. Read the Invariants
 
-Read [INVARIANTS.md](../docs/INVARIANTS.md) completely. Understand all 11 invariants across 4 categories:
+Read [INVARIANTS.md](../docs/INVARIANTS.md) completely. Understand all 15 invariants across 5 categories (11 core in 4 categories, plus 4 multi-camera):
 
 **Data Integrity** (3 invariants):
 - INV-DATA-001: USB Message Integrity
@@ -28,7 +28,7 @@ Read [INVARIANTS.md](../docs/INVARIANTS.md) completely. Understand all 11 invari
 - INV-DATA-003: Connection State Consistency
 
 **Security** (3 invariants):
-- INV-SEC-001: USB Device Vendor/Product ID Verification
+- INV-SEC-001: USB Device Vendor ID Verification
 - INV-SEC-002: User Permission Required for USB Access
 - INV-SEC-003: Command Validation Before Transmission
 
@@ -41,9 +41,15 @@ Read [INVARIANTS.md](../docs/INVARIANTS.md) completely. Understand all 11 invari
 - INV-API-001: Backward Compatible Exports
 - INV-API-002: Uint8Array for Binary Data
 
+**Multi-Camera** (4 invariants):
+- INV-MULTI-001: Camera Identification
+- INV-MULTI-002: Maximum Camera Limit
+- INV-MULTI-003: Partial Failure Handling
+- INV-MULTI-004: Synchronization Accuracy Documentation
+
 ### 2. Analyze Each Change
 
-For each code change, systematically check **all 11 invariants**:
+For each code change, systematically check **all 15 invariants**:
 
 ---
 

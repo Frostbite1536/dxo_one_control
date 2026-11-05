@@ -430,8 +430,9 @@ export class CameraManager {
         // Find and remove the disconnected camera
         for (const [id, camera] of this.cameras) {
             if (camera.device === event.device) {
-                // INV-DATA-003: Update connection state
-                camera.isConnected = false;
+                // INV-DATA-003: Update connection state; stop live view and
+                // fail any in-flight request instead of leaving it pending.
+                camera.markDisconnected();
                 this.cameras.delete(id);
                 console.log(`[CameraManager] Camera ${camera.displayName} disconnected`);
                 this._notifyCameraChange();

@@ -2,21 +2,25 @@
 
 ## Implementation Status
 
-**Status: IMPLEMENTED**
+**Status: PARTIALLY IMPLEMENTED.** Multi-camera connection, live view, settings control and synchronized capture exist in `android-app/` (build instructions: [Android App README](../android-app/README.md)). Image download from the cameras, a gallery, and thumbnails/sharing are **not** implemented. The plan sections below are the original design; where they differ from the code, the tables, "Project Structure (implemented)" and the checklists are authoritative. Nothing here has been run against real cameras.
 
-The Android app has been built and is located at `/android-app/`. See the [Android App README](../android-app/README.md) for build instructions.
-
-### Completed Components
+### Components
 
 | Component | Status | Location |
 |-----------|--------|----------|
-| USB Protocol Layer | Complete | `usb/DxoOneUsbProtocol.kt`, `usb/JsonRpcMessage.kt` |
-| Camera Connection | Complete | `usb/CameraConnection.kt` |
-| Device Manager | Complete | `usb/UsbDeviceManager.kt` |
-| Sync Capture Engine | Complete | `service/SyncCaptureEngine.kt` |
-| Camera Manager Service | Complete | `service/CameraManagerService.kt` |
-| UI Components | Complete | `ui/components/`, `ui/screens/` |
-| Jetpack Compose UI | Complete | `ui/MainActivity.kt`, `ui/screens/MainScreen.kt` |
+| Stream demux (packet routing, JPEG reassembly) | Done, unit-tested | `usb/DxoOneStreamDemux.kt`, `app/src/test/.../DxoOneStreamDemuxTest.kt` |
+| USB protocol (reader thread, serialized RPC, timeouts) | Done | `usb/DxoOneUsbProtocol.kt`, `usb/JsonRpcMessage.kt` (incl. `DxoOneMethods` allowlist) |
+| Camera connection (`ConnectionState`, live view, status) | Done | `usb/CameraConnection.kt` |
+| Device manager (process-wide, permission flow, max 4) | Done | `usb/UsbDeviceManager.kt` |
+| Sync capture engine (parallel / sequential) | Done; sync variance is not a true shutter-time measure | `service/SyncCaptureEngine.kt` |
+| Foreground service | Done | `service/CameraManagerService.kt` |
+| Settings applier (checks each result; used on connect) | Done | `service/CameraSettingsApplier.kt` |
+| Settings persistence | Done (DataStore) | `data/SettingsPreferences.kt` |
+| Compose UI (main grid, settings) | Done | `ui/MainActivity.kt`, `ui/screens/`, `ui/components/`, `ui/viewmodel/` |
+| Image download | Not implemented | - |
+| Gallery | Placeholder composable only (`GalleryScreen` in `MainActivity.kt`) | - |
+
+Runtime lifecycle: `DxoOneMultiCamApp` initializes the process-wide `UsbDeviceManager` (idempotent) and starts `CameraManagerService` (foreground, `connectedDevice`, `START_NOT_STICKY`) when the first camera connects; the service stops itself when none remain. `MainActivity` is `singleTop`. See `docs/STATE_MACHINES.md` sections 1, 5 and 10.
 
 ---
 
@@ -46,8 +50,8 @@ This document provides comprehensive plans for developing a native Android appli
 Build a native Android application that:
 - Connects to 4 DXO One cameras via USB simultaneously
 - Provides live preview from all cameras
-- Captures synchronized photos with <100ms variance
-- Downloads and manages captured images
+- Captures synchronized photos (target <100ms variance; unmeasured)
+- Downloads and manages captured images (**planned, not implemented**)
 
 ### Key Challenges
 1. **USB Host Mode**: Android must act as USB host for 4 devices
@@ -210,6 +214,8 @@ Build a native Android application that:
 └─────────────────────────────────────────────────────────────────────────────┘
 ```
 
+> The diagram above is the original design. In the code there is no `CaptureStateViewModel` (only `MultiCameraViewModel` and `SettingsViewModel`), the cameras are owned by `UsbDeviceManager` rather than by the service, and the protocol layer is `DxoOneStreamDemux` + `DxoOneUsbProtocol` with a dedicated reader thread per camera (no command queue beyond a per-camera request mutex).
+
 ### Data Flow Diagram
 
 ```
@@ -284,13 +290,12 @@ Build a native Android application that:
 
 ```kotlin
 object DxoOneUsb {
-    const val VENDOR_ID = 0x2B8F    // DXO Labs
-    const val PRODUCT_ID = 0x0001   // DXO One
+    const val VENDOR_ID = 0x2B8F    // DXO Labs; the only identity check (no product ID)
 
-    // USB Interface configuration
-    const val INTERFACE_CLASS = 0xFF     // Vendor-specific
-    const val INTERFACE_SUBCLASS = 0x00
-    const val INTERFACE_PROTOCOL = 0x00
+    // USB interface configuration (DxoOneConstants.kt)
+    const val INTERFACE_CONTROL = 0      // bulk endpoints
+    const val INTERFACE_DATA = 1         // claimed; alternate setting 1 is selected
+    const val ALTERNATE_SETTING = 1
 
     // Endpoint configuration
     const val ENDPOINT_IN = 0x81         // Bulk IN
@@ -308,13 +313,13 @@ object DxoOneUsb {
 │                                                                             │
 │  OUTGOING MESSAGE (Android → Camera)                                        │
 │  ┌─────────────────────────────────────────────────────────────────────┐   │
-│  │ Byte   │ 0-7        │ 8-11       │ 12-33      │ 34-N       │ N+1   │   │
+│  │ Byte   │ 0-7        │ 8-9        │ 10-31      │ 32-N       │ N+1   │   │
 │  │ Field  │ RPC_HEADER │ MSG_SIZE   │ TRAILER    │ JSON-RPC   │ NULL  │   │
 │  │ Value  │ 0x00...    │ little-end │ 0x00...    │ payload    │ 0x00  │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
 │  RPC_HEADER (8 bytes): Fixed header identifying RPC message                 │
-│  MSG_SIZE (4 bytes): Size of payload in little-endian                       │
+│  MSG_SIZE (2 bytes): Size of payload in little-endian (max 0xFFFF)                       │
 │  TRAILER (22 bytes): Padding/metadata                                       │
 │  JSON-RPC: The actual command payload                                       │
 │  NULL: Null terminator                                                      │
@@ -343,7 +348,7 @@ object DxoOneUsb {
 │  {                                                                          │
 │    "jsonrpc": "2.0",                                                        │
 │    "method": "dxo_setting_set",                                             │
-│    "params": {"setting_name": "iso", "value": 100},                         │
+│    "params": {"type": "iso", "param": "100"},                         │
 │    "id": 3                                                                  │
 │  }                                                                          │
 │                                                                             │
@@ -357,8 +362,8 @@ object DxoOneUsb {
 | `dxo_photo_take` | Capture a photo | None |
 | `dxo_camera_status_get` | Get camera status | None |
 | `dxo_all_settings_get` | Get all settings | None |
-| `dxo_setting_set` | Change a setting | setting_name, value |
-| `dxo_camera_mode_switch` | Switch camera mode | mode |
+| `dxo_setting_set` | Change a setting (camera first sends a `dxo_setting_applied` notification, then the reply) | type, param |
+| `dxo_camera_mode_switch` | Switch camera mode (`view` starts live view) | param |
 | `dxo_tap_to_focus` | Focus at point | x, y |
 | `dxo_fs_last_file_get` | Get last captured file | None |
 | `dxo_camera_poweroff` | Power off camera | None |
@@ -372,89 +377,54 @@ object DxoOneUsb {
 | Layer | Technology | Rationale |
 |-------|------------|-----------|
 | **UI** | Jetpack Compose | Modern, declarative, efficient |
-| **Architecture** | MVVM + Clean Architecture | Testable, maintainable |
+| **Architecture** | MVVM (no repository / use-case layer) | ViewModels talk to `UsbDeviceManager`, `SyncCaptureEngine` and `CameraSettingsApplier` directly |
 | **Async** | Kotlin Coroutines + Flow | Non-blocking USB operations |
 | **DI** | Hilt | Standard Android DI |
 | **USB** | Android USB Host API | Direct hardware access |
-| **Storage** | Room + MediaStore | Local DB + Gallery integration |
+| **Storage** | DataStore (preferences) | Settings persistence. Room is declared in `build.gradle.kts` but unused; MediaStore is not used (no image download yet) |
 | **Image** | Coil | Efficient image loading |
 
-### Project Structure
+### Project Structure (implemented)
 
 ```
-app/
-├── src/main/
-│   ├── java/com/dxoone/multicam/
-│   │   ├── di/                          # Dependency injection
-│   │   │   ├── AppModule.kt
-│   │   │   └── UsbModule.kt
-│   │   │
-│   │   ├── data/                        # Data layer
-│   │   │   ├── repository/
-│   │   │   │   ├── CameraRepository.kt
-│   │   │   │   └── ImageRepository.kt
-│   │   │   ├── local/
-│   │   │   │   ├── CaptureDatabase.kt
-│   │   │   │   └── CaptureDao.kt
-│   │   │   └── model/
-│   │   │       ├── CameraState.kt
-│   │   │       └── CaptureResult.kt
-│   │   │
-│   │   ├── domain/                      # Business logic
-│   │   │   ├── usecase/
-│   │   │   │   ├── ConnectCameraUseCase.kt
-│   │   │   │   ├── SyncCaptureUseCase.kt
-│   │   │   │   └── DownloadImagesUseCase.kt
-│   │   │   └── model/
-│   │   │       ├── Camera.kt
-│   │   │       └── CaptureSession.kt
-│   │   │
-│   │   ├── usb/                         # USB protocol layer
-│   │   │   ├── DxoOneUsbProtocol.kt     # Message encoding/decoding
-│   │   │   ├── UsbDeviceManager.kt      # Device discovery & connection
-│   │   │   ├── CameraConnection.kt      # Per-camera connection handler
-│   │   │   ├── JsonRpcMessage.kt        # JSON-RPC data classes
-│   │   │   └── LiveViewStream.kt        # JPEG stream parser
-│   │   │
-│   │   ├── service/                     # Background services
-│   │   │   ├── CameraManagerService.kt  # Multi-camera orchestration
-│   │   │   └── SyncCaptureEngine.kt     # Synchronized capture logic
-│   │   │
-│   │   ├── ui/                          # Presentation layer
-│   │   │   ├── theme/
-│   │   │   │   └── Theme.kt
-│   │   │   ├── components/
-│   │   │   │   ├── CameraPreviewCard.kt
-│   │   │   │   ├── CaptureButton.kt
-│   │   │   │   └── ConnectionStatus.kt
-│   │   │   ├── screens/
-│   │   │   │   ├── MainScreen.kt
-│   │   │   │   ├── SettingsScreen.kt
-│   │   │   │   └── GalleryScreen.kt
-│   │   │   └── viewmodel/
-│   │   │       ├── MultiCameraViewModel.kt
-│   │   │       └── CaptureViewModel.kt
-│   │   │
-│   │   └── DxoOneMultiCamApp.kt         # Application class
-│   │
-│   ├── res/
-│   │   ├── xml/
-│   │   │   └── device_filter.xml        # USB device filter
-│   │   └── ...
-│   │
-│   └── AndroidManifest.xml
-│
-├── build.gradle.kts
-└── proguard-rules.pro
+app/src/main/java/com/dxoone/multicam/
+├── DxoOneMultiCamApp.kt               # Application: initializes UsbDeviceManager, starts the service
+├── di/AppModule.kt                    # Hilt module
+├── data/SettingsPreferences.kt        # DataStore-backed settings
+├── domain/model/
+│   ├── CameraSettings.kt
+│   ├── CameraUiState.kt
+│   └── SettingsState.kt
+├── usb/
+│   ├── DxoOneConstants.kt
+│   ├── DxoOneStreamDemux.kt           # Packet routing / JPEG reassembly
+│   ├── DxoOneUsbProtocol.kt           # Reader thread, request mutex, timeouts
+│   ├── JsonRpcMessage.kt              # JSON-RPC classes + DxoOneMethods allowlist
+│   ├── CameraConnection.kt            # Per-camera connection, ConnectionState, live view
+│   └── UsbDeviceManager.kt            # Process-wide device manager
+├── service/
+│   ├── CameraManagerService.kt        # Foreground service
+│   ├── CameraSettingsApplier.kt
+│   └── SyncCaptureEngine.kt
+└── ui/
+    ├── MainActivity.kt                # singleTop; nav host; placeholder GalleryScreen
+    ├── theme/Theme.kt
+    ├── components/                    # CameraPreviewCard, CaptureButton, ConnectionStatusBar
+    ├── screens/                       # MainScreen, SettingsScreen
+    └── viewmodel/                     # MultiCameraViewModel, SettingsViewModel
+app/src/test/java/com/dxoone/multicam/usb/DxoOneStreamDemuxTest.kt
+app/src/main/res/xml/device_filter.xml
 ```
+
+Not present (were in the original plan): `UsbModule.kt`, `data/repository/`, Room database/DAO, `domain/usecase/`, `LiveViewStream.kt`, a real `GalleryScreen.kt`, `CaptureViewModel.kt`.
 
 ### USB Device Filter (device_filter.xml)
 
 ```xml
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <usb-device vendor-id="11151" product-id="1" />
-    <!-- 0x2B8F = 11151 decimal (DXO Vendor ID) -->
+    <usb-device vendor-id="11151" />
+    <!-- 0x2B8F = 11151 decimal (DXO Vendor ID); vendor only, product ID varies -->
 </resources>
 ```
 
@@ -467,14 +437,16 @@ app/
     <uses-feature android:name="android.hardware.usb.host" />
 
     <!-- Permissions -->
-    <uses-permission android:name="android.permission.USB_PERMISSION" />
-    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
-                     android:maxSdkVersion="28" />
-    <uses-permission android:name="android.permission.READ_EXTERNAL_STORAGE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <!-- USB permission is a runtime UsbManager grant, not a manifest permission.
+         Storage permissions are also declared but unused until image download exists. -->
 
     <application ...>
         <activity android:name=".ui.MainActivity"
-                  android:exported="true">
+                  android:exported="true"
+                  android:launchMode="singleTop">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -491,6 +463,7 @@ app/
 
         <!-- Background camera service -->
         <service android:name=".service.CameraManagerService"
+                 android:exported="false"
                  android:foregroundServiceType="connectedDevice" />
     </application>
 </manifest>
@@ -557,6 +530,8 @@ app/
 ```
 
 ### Kotlin Implementation
+
+> Illustrative sketch of the original plan. The real engine is `service/SyncCaptureEngine.kt`: it takes the camera list as an argument (`captureAllParallel` / `captureAllSequential`), calls `CameraConnection.takePhoto()`, and returns `MultiCaptureResult`. Its `syncVarianceMs` is the spread of per-camera command start times, not of shutter times.
 
 ```kotlin
 class SyncCaptureEngine(
@@ -644,7 +619,7 @@ class SyncCaptureEngine(
 │  │ Shutter actuation         │ 10-30ms       │ Mechanical variance     │   │
 │  └─────────────────────────────────────────────────────────────────────┘   │
 │                                                                             │
-│  Expected Total Variance: 20-65ms (typically ~50ms)                        │
+│  Expected Total Variance: unmeasured; 20-65ms is a design estimate │
 │                                                                             │
 │  ───────────────────────────────────────────────────────────────────────   │
 │                                                                             │
@@ -824,15 +799,17 @@ class SyncCaptureEngine(
 
 ## Implementation Roadmap
 
+Legend: `[x]` done, `[~]` partly done, `[ ]` not done.
+
 ### Phase 1: Foundation (Core USB Communication)
 
 **Deliverables:**
-- [ ] Android project setup with Kotlin & Jetpack Compose
-- [ ] USB Host API integration
-- [ ] DXO One device detection and enumeration
-- [ ] Single camera connection and basic commands
-- [ ] JSON-RPC protocol implementation
-- [ ] Unit tests for protocol layer
+- [x] Android project setup with Kotlin & Jetpack Compose
+- [x] USB Host API integration
+- [x] DXO One device detection and enumeration
+- [x] Single camera connection and basic commands
+- [x] JSON-RPC protocol implementation
+- [x] Unit tests for protocol layer (stream demux only)
 
 **Key Files:**
 - `DxoOneUsbProtocol.kt`
@@ -842,12 +819,12 @@ class SyncCaptureEngine(
 ### Phase 2: Multi-Camera Management
 
 **Deliverables:**
-- [ ] Multi-device connection handling
-- [ ] Camera identification (serial number extraction)
-- [ ] Connection state management
-- [ ] Camera naming/labeling system
-- [ ] Live view streaming from multiple cameras
-- [ ] Battery level monitoring
+- [x] Multi-device connection handling
+- [x] Camera identification (serial number extraction)
+- [x] Connection state management
+- [x] Camera naming/labeling system
+- [x] Live view streaming from multiple cameras
+- [x] Battery level monitoring
 
 **Key Files:**
 - `CameraManagerService.kt`
@@ -857,16 +834,15 @@ class SyncCaptureEngine(
 ### Phase 3: Synchronized Capture
 
 **Deliverables:**
-- [ ] Parallel capture command dispatch
-- [ ] Synchronization timing measurement
-- [ ] Capture result aggregation
-- [ ] Error handling for partial failures
-- [ ] Capture session management
+- [x] Parallel capture command dispatch
+- [~] Synchronization timing measurement (computed from command start times; not a shutter-time measure)
+- [x] Capture result aggregation
+- [x] Error handling for partial failures
+- [~] Capture session management (session id per capture; no persisted sessions)
 
 **Key Files:**
 - `SyncCaptureEngine.kt`
-- `SyncCaptureUseCase.kt`
-- `CaptureResult.kt`
+- (no use-case class; `CaptureResult` lives in `CameraConnection.kt`)
 
 ### Phase 4: Image Management
 
@@ -878,18 +854,15 @@ class SyncCaptureEngine(
 - [ ] Thumbnail generation
 - [ ] Share functionality
 
-**Key Files:**
-- `ImageRepository.kt`
-- `DownloadImagesUseCase.kt`
-- `GalleryScreen.kt`
+**Status: NOT IMPLEMENTED.** None of the Phase 4 files exist; the Gallery route shows a placeholder.
 
 ### Phase 5: Polish & Optimization
 
 **Deliverables:**
-- [ ] Settings persistence
+- [x] Settings persistence
 - [ ] Camera preset configurations
 - [ ] Performance optimization
-- [ ] Error recovery mechanisms
+- [~] Error recovery mechanisms (timeouts, ERROR state on transport failure; no auto-reconnect)
 - [ ] User documentation
 - [ ] Play Store preparation
 
@@ -989,10 +962,10 @@ class SyncCaptureEngine(
 
 ## Appendix C: JSON-RPC Command Reference
 
-See existing documentation in `/docs/USER_GUIDE.md` for complete command reference.
+The commands the app uses are listed under "Available Commands" above and in `DxoOneMethods` (`usb/JsonRpcMessage.kt`); the JS side sends them from `dxo1usb.js`. There is no separate full command reference.
 
 ---
 
-*Document Version: 1.0*
+*Document Version: 2.0*
 *Created: January 2025*
-*Last Updated: January 2025*
+*Last Updated: 2026-11-04*
