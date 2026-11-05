@@ -65,7 +65,10 @@ class UsbDeviceManager @Inject constructor(
 
     private fun disconnectTracked(camera: CameraConnection) {
         // Device nodes change on re-plug, so purge entries whose release has finished.
-        releasing.values.removeIf { it.awaitReleased(0) }
+        val iterator = releasing.values.iterator() // Collection.removeIf is API 24+
+        while (iterator.hasNext()) {
+            if (iterator.next().awaitReleased(0)) iterator.remove()
+        }
         releasing[camera.device.deviceName] = camera
         camera.disconnect()
     }
