@@ -1,83 +1,42 @@
-<html>
-<script type="module">
-    import DXOONE from './dxo1usb.js';
-
-    const $ = q => document.querySelector(q);
-
-    // textContent, not innerHTML: messages include camera-supplied JSON.
-    const log = msg => $('#msg').textContent = msg;
-    const logJSON = obj => log(JSON.stringify(obj, null, 2));
-
-    const dxo1 = {};
-
-    function updateImageWithDataURL(dataURL) {
-        if (dataURL) $('#liveview').src = dataURL;
-    }
-
-    window.toggleConnection = async () => {
-        const shouldEnableControls = !dxo1.device;
-
-        if (dxo1.device) {
-            await dxo1.device.close();
-            delete dxo1.device;
-        } else {
-            dxo1.device = await DXOONE.open();
-
-            dxo1.settings = await dxo1.device.command.getAllSettings();
-            dxo1.status = await dxo1.device.command.getStatus();
-
-            logJSON({ status: dxo1.status, settings: dxo1.settings });
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta http-equiv="Content-Security-Policy"
+          content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' blob: data:; connect-src 'self'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>DXO One Web Interface</title>
+    <script type="module" src="./usb-page.js"></script>
+    <style>
+        #liveview {
+            max-width: 100%;
+            max-height: 600px;
+            display: block;
+            margin: auto;
+            margin-top: 1em;
         }
 
-        $('#btnConnect').innerHTML = shouldEnableControls ? 'Disconnect' : 'Connect';
-        $('#btnLiveView').disabled = !shouldEnableControls;
-        $('#btnSnap').disabled = !shouldEnableControls;
-    };
-
-    let isLiveViewRunning = false;
-    window.toggleLiveView = () => {
-        if (isLiveViewRunning) {
-            dxo1.device.command.liveView.stop();
-        } else {
-            dxo1.device.command.liveView.start(
-                updateImageWithDataURL
-            );
+        #msg {
+            white-space: pre-wrap;
+            font-family: monospace;
         }
 
-        $('#btnLiveView').innerHTML = isLiveViewRunning ? 'Start live view' : 'Stop live view';
-        isLiveViewRunning = !isLiveViewRunning;
-    }
-
-    window.takePhoto = async () => {
-        const res = await dxo1.device.command.takePhoto();
-        log(`Photo taken!`);
-    }
-</script>
-<style>
-    #liveview {
-        max-width: 100%;
-        max-height: 600px;
-        display: block;
-        margin: auto;
-        margin-top: 1em;
-    }
-
-    #msg {
-        white-space: pre-wrap;
-        font-family: monospace;
-    }
-</style>
+        .warning {
+            color: rgb(210, 90, 90);
+        }
+    </style>
+</head>
 
 <body>
     <h2>DXO One Web Interface</h2>
-    <h4 style="color: rgb(210,90,90)">Only tested with microUSB connection!</h4>
+    <h4 class="warning">Only tested with microUSB connection!</h4>
     <p style="margin-bottom: 1em;">
         <a href="multi-camera.html">Switch to Multi-Camera Mode (up to 4 cameras)</a>
     </p>
-    <button onclick="window.toggleConnection()" id="btnConnect">Connect</button>
-    <button onclick="window.toggleLiveView()" id="btnLiveView" disabled>Start live view</button>
-    <button onclick="window.takePhoto()" id="btnSnap" disabled>Take a photo</button>
-    <img id="liveview">
+    <button id="btnConnect">Connect</button>
+    <button id="btnLiveView" disabled>Start live view</button>
+    <button id="btnSnap" disabled>Take a photo</button>
+    <img id="liveview" alt="Live view from the camera">
     <div id="msg"></div>
 </body>
 

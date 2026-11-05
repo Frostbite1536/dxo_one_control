@@ -6,7 +6,7 @@
     for use in multi-camera scenarios.
 */
 
-import { DxoTransport } from './DxoTransport.js';
+import { DxoTransport, isKnownMethod } from './DxoTransport.js';
 
 /**
  * CameraDevice - Manages a single DXO One camera connection
@@ -34,9 +34,11 @@ export class CameraDevice {
         this.lastError = null;
         this.nickname = nickname;
 
-        // Unique identifier - prefer serial number, fallback to device info
+        // INV-MULTI-001: identifier stable across reconnects - the serial number, or
+        // vendor/product/device version when the camera reports no serial. CameraManager
+        // adds a suffix if two serial-less cameras would collide.
         this.id = usbDevice.serialNumber ||
-                  `${usbDevice.vendorId}-${usbDevice.productId}-${Date.now()}`;
+                  `${usbDevice.vendorId}-${usbDevice.productId}-${usbDevice.deviceVersionMajor ?? 0}.${usbDevice.deviceVersionMinor ?? 0}`;
 
         // USB endpoints
         this.inEndpoint = null;
@@ -160,6 +162,10 @@ export class CameraDevice {
      * @returns {Promise<Object>} RPC response
      */
     async transferOutRPC(method, params, options) {
+        // INV-SEC-003: only known camera commands are sent
+        if (!isKnownMethod(method)) {
+            throw new Error(`Unknown camera command: ${method}`);
+        }
         // INV-DATA-003: Check connection state
         if (!this.isConnected || !this.transport) {
             throw new Error(`Camera ${this.displayName} not connected`);

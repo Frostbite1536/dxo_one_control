@@ -13,7 +13,7 @@
     - Multi-angle product photography
     - Scientific/research capture
 */
-import { DxoTransport } from './DxoTransport.js';
+import { DxoTransport, isKnownMethod } from './DxoTransport.js';
 
 // Multi-camera support classes (INV-API-001: backward compatible addition)
 export { CameraDevice } from './CameraDevice.js';
@@ -59,7 +59,13 @@ async function open(usbBackend = navigator.usb) {
         throw error;
     }
 
-    const transferOutRPC = (method, params, options) => transport.request(method, params, options);
+    const transferOutRPC = (method, params, options) => {
+        // INV-SEC-003: only known camera commands are sent
+        if (!isKnownMethod(method)) {
+            return Promise.reject(new Error(`Unknown camera command: ${method}`));
+        }
+        return transport.request(method, params, options);
+    };
 
     const bindApplySetting = baseParams => (async data => {
         const params = { ...baseParams };

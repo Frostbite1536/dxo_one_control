@@ -452,3 +452,25 @@ test('CameraDevice: live view start is idempotent and stop discards further fram
     assert.equal(camera.isLiveViewActive, false);
     await manager.dispose();
 });
+
+test('CameraDevice: unknown commands are rejected before anything is sent', async () => {
+    const cam = new FakeDxoOne({ serialNumber: 'AL01' });
+    const manager = new CameraManager({ usbBackend: fakeUsbBackend([cam]) });
+    const camera = await manager.connectCamera();
+    const sent = cam.requests.length;
+    await assert.rejects(camera.transferOutRPC('dxo_format_sdcard'), /Unknown camera command/);
+    assert.equal(cam.requests.length, sent);
+    await manager.dispose();
+});
+
+test('CameraManager: cameras without a serial number get stable, unique ids', async () => {
+    const a = new FakeDxoOne({ serialNumber: '' });
+    const b = new FakeDxoOne({ serialNumber: '' });
+    const manager = new CameraManager({ usbBackend: fakeUsbBackend([a, b]) });
+    const first = await manager.connectCamera();
+    const second = await manager.connectCamera();
+    assert.notEqual(first.id, second.id);
+    assert.ok(!/\d{10,}/.test(first.id), 'id must not contain a timestamp');
+    assert.equal(manager.cameraCount, 2);
+    await manager.dispose();
+});

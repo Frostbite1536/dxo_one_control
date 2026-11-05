@@ -41,6 +41,29 @@ const METHOD_TIMEOUTS_MS = {
 };
 const HANDSHAKE_TIMEOUT_MS = 2000;
 
+/**
+ * JSON-RPC methods the DXO One is known to accept (INV-SEC-003). Same set as the Android
+ * app's DxoOneMethods.VALID_COMMANDS. Public APIs reject anything else before sending.
+ */
+export const KNOWN_METHODS = Object.freeze(new Set([
+    'dxo_photo_take',
+    'dxo_camera_status_get',
+    'dxo_all_settings_get',
+    'dxo_setting_set',
+    'dxo_camera_mode_switch',
+    'dxo_camera_poweroff',
+    'dxo_idle',
+    'dxo_tap_to_focus',
+    'dxo_digital_zoom_get',
+    'dxo_fs_last_file_get',
+    'dxo_fs_cancel_get',
+    'dxo_gps_data_set',
+]));
+
+export function isKnownMethod(method) {
+    return KNOWN_METHODS.has(method);
+}
+
 export class TransportError extends Error {
     /**
      * @param {string} message
