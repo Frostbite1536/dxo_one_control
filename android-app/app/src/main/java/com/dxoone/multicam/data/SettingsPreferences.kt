@@ -19,6 +19,10 @@ import javax.inject.Singleton
  */
 private val Context.dataStore: DataStore<Preferences> by preferencesDataStore(name = "camera_settings")
 
+/** Parses a stored enum name, falling back to [default] if it no longer matches a constant. */
+private inline fun <reified T : Enum<T>> String?.toEnumOr(default: T): T =
+    this?.let { name -> enumValues<T>().firstOrNull { it.name == name } } ?: default
+
 @Singleton
 class SettingsPreferences @Inject constructor(
     @ApplicationContext private val context: Context
@@ -45,28 +49,17 @@ class SettingsPreferences @Inject constructor(
      */
     val settingsFlow: Flow<CameraSettings> = context.dataStore.data.map { preferences ->
         CameraSettings(
-            imageFormat = preferences[KEY_IMAGE_FORMAT]?.let { enumValueOf<ImageFormat>(it) }
-                ?: ImageFormat.JPEG_ONLY,
-            shootingMode = preferences[KEY_SHOOTING_MODE]?.let { enumValueOf<ShootingMode>(it) }
-                ?: ShootingMode.PROGRAM,
-            iso = preferences[KEY_ISO]?.let { enumValueOf<IsoSetting>(it) }
-                ?: IsoSetting.AUTO,
-            aperture = preferences[KEY_APERTURE]?.let { enumValueOf<ApertureSetting>(it) }
-                ?: ApertureSetting.F1_8,
-            exposureTime = preferences[KEY_EXPOSURE_TIME]?.let { enumValueOf<ExposureTimeSetting>(it) }
-                ?: ExposureTimeSetting.AUTO,
-            evBias = preferences[KEY_EV_BIAS]?.let { enumValueOf<EvBiasSetting>(it) }
-                ?: EvBiasSetting.ZERO,
-            focusMode = preferences[KEY_FOCUS_MODE]?.let { enumValueOf<FocusMode>(it) }
-                ?: FocusMode.AUTO_FOCUS,
-            afMode = preferences[KEY_AF_MODE]?.let { enumValueOf<AfMode>(it) }
-                ?: AfMode.AF_SINGLE,
-            whiteBalanceIntensity = preferences[KEY_WHITE_BALANCE]?.let { enumValueOf<WhiteBalanceIntensity>(it) }
-                ?: WhiteBalanceIntensity.MEDIUM,
-            jpegQuality = preferences[KEY_JPEG_QUALITY]?.let { enumValueOf<JpegQuality>(it) }
-                ?: JpegQuality.FINE,
-            selfTimer = preferences[KEY_SELF_TIMER]?.let { enumValueOf<SelfTimerSetting>(it) }
-                ?: SelfTimerSetting.OFF,
+            imageFormat = preferences[KEY_IMAGE_FORMAT].toEnumOr(ImageFormat.JPEG_ONLY),
+            shootingMode = preferences[KEY_SHOOTING_MODE].toEnumOr(ShootingMode.PROGRAM),
+            iso = preferences[KEY_ISO].toEnumOr(IsoSetting.AUTO),
+            aperture = preferences[KEY_APERTURE].toEnumOr(ApertureSetting.F1_8),
+            exposureTime = preferences[KEY_EXPOSURE_TIME].toEnumOr(ExposureTimeSetting.AUTO),
+            evBias = preferences[KEY_EV_BIAS].toEnumOr(EvBiasSetting.ZERO),
+            focusMode = preferences[KEY_FOCUS_MODE].toEnumOr(FocusMode.AUTO_FOCUS),
+            afMode = preferences[KEY_AF_MODE].toEnumOr(AfMode.AF_SINGLE),
+            whiteBalanceIntensity = preferences[KEY_WHITE_BALANCE].toEnumOr(WhiteBalanceIntensity.MEDIUM),
+            jpegQuality = preferences[KEY_JPEG_QUALITY].toEnumOr(JpegQuality.FINE),
+            selfTimer = preferences[KEY_SELF_TIMER].toEnumOr(SelfTimerSetting.OFF),
             liveViewEnabled = preferences[KEY_LIVE_VIEW_ENABLED] ?: true
         )
     }
